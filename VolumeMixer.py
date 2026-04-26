@@ -17,6 +17,7 @@ from comtypes import CLSCTX_ALL
 EXPONENT = 2.0
 POLL_INTERVAL_MS = 500   # check for new audio apps every 500 ms
 IGNORED_DEVICES_FILE = "ignored_devices.txt" 
+IGNORED_APPS = "ignored_apps.txt"
 
 # --- Global Variables ---
 root = None
@@ -401,14 +402,8 @@ def on_tab_changed(event):
 
 # --------------------- Tray icon ---------------------
 def create_tray_image():
-    image = Image.new('RGB', (64, 64), (0, 120, 215))
-    draw = ImageDraw.Draw(image)
-    draw.ellipse([2, 2, 62, 62], fill=(0, 100, 190))
-    draw.rectangle([14, 22, 26, 42], fill='white')
-    draw.polygon([(26, 20), (26, 44), (40, 50), (40, 14)], fill='white')
-    draw.arc([38, 18, 52, 34], -55, 55, fill='white', width=3)
-    draw.arc([46, 10, 60, 42], -55, 55, fill='white', width=3)
-    return image
+    # Use external icon file instead of generating one
+    return Image.open("icon.png")
 
 
 def toggle_gui(icon, item):

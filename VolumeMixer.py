@@ -29,6 +29,7 @@ device_list = []            # list of (display_name, device_id)
 device_name_to_id = {}      # mapping for quick lookup
 device_sliders = {}         # slider widgets for device volumes
 ignored_device_set = set()
+ignored_app_set = set()     # set of app names (without .exe) to ignore
 
 
 def load_ignored_devices():                    
@@ -41,6 +42,18 @@ def load_ignored_devices():
                 name = line.strip()
                 if name:
                     ignored_device_set.add(name)
+
+
+def load_ignored_apps():
+    """Load ignored app names (without .exe) from IGNORED_APPS."""
+    global ignored_app_set
+    ignored_app_set = set()
+    if os.path.exists(IGNORED_APPS):
+        with open(IGNORED_APPS, 'r', encoding='utf-8') as f:
+            for line in f:
+                name = line.strip()
+                if name:
+                    ignored_app_set.add(name)
 
 
 def get_work_area(window):
@@ -202,6 +215,7 @@ def refresh_app_list():
     app_widgets.clear()
 
     refresh_device_data()
+    load_ignored_apps()  # Reload ignored apps before building the list
 
     try:
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
@@ -239,12 +253,23 @@ def refresh_app_list():
             apps.append(session.Process.name())
     apps = sorted(list(set(apps)))
 
-    clean_names = [app[:-4] if app.lower().endswith('.exe') else app for app in apps]
+    # Filter out ignored apps (check clean name without .exe)
+    filtered_apps = []
+    for app in apps:
+        clean = app[:-4] if app.lower().endswith('.exe') else app
+        if clean not in ignored_app_set:
+            filtered_apps.append(app)
+
+    if not filtered_apps:
+        resize_and_position()
+        return
+
+    clean_names = [app[:-4] if app.lower().endswith('.exe') else app for app in filtered_apps]
     max_name_len = max((len(name) for name in clean_names), default=15)
 
     device_names = [name for name, _ in device_list]
 
-    for app in apps:
+    for app in filtered_apps:
         add_app_row(app, sessions, device_names, app_current_device, max_name_len)
 
 
@@ -307,6 +332,17 @@ def poll_new_apps():
 
         new_apps = current_apps - set(app_widgets.keys())
         if new_apps:
+            # Filter out ignored apps
+            new_filtered = set()
+            for app in new_apps:
+                clean = app[:-4] if app.lower().endswith('.exe') else app
+                if clean not in ignored_app_set:
+                    new_filtered.add(app)
+            new_apps = new_filtered
+
+            if not new_apps:
+                return
+
             device_names = [name for name, _ in device_list]
             all_known = set(app_widgets.keys()) | new_apps
             clean_known = [a[:-4] if a.lower().endswith('.exe') else a for a in all_known]
@@ -468,6 +504,7 @@ def create_mixer_window():
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
     load_ignored_devices()
+    load_ignored_apps()       # load ignored apps at startup
     refresh_app_list()
     build_device_tab()
     root.after(POLL_INTERVAL_MS, poll_new_apps)

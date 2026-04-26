@@ -85,4 +85,4 @@ CABLE Input (VB-Audio Virtual Cable)
 
 ---
 
-*Uses [SoundVolumeView](https://www.nirsoft.net/utils/soundvolumeview.html) by Nir Sofer, [pycaw](https://github.com/AndreMiras/pycaw), [pystray](https://github.com/moses-palmer/pystray), and [Pillow](https://python-pillow.org/).*
+*Uses [SoundVolumeView](https://www.nirsoft.net/utils/sound_volume_view.html) by Nir Sofer, [pycaw](https://github.com/AndreMiras/pycaw), [pystray](https://github.com/moses-palmer/pystray), and [Pillow](https://github.com/python-pillow/Pillow).*

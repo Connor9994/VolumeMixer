@@ -1,0 +1,1 @@
+py -m nuitka --standalone --product-name="Volume Mixer" --copyright="Copyright 2026 Homestead Harvest" --file-description="Volume Mixer" --windows-icon-from-ico=icon.ico --file-version="1.0.0.0" --product-version="1.0.0.0" --include-data-file=icon.png=icon.png --enable-plugin=tk-inter --windows-console-mode=disable --follow-imports --assume-yes-for-downloads VolumeMixer.py

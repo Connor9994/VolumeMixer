@@ -28,16 +28,6 @@ A compact Windows volume mixer with per-application volume control, device routi
    ```
 3. Place `SoundVolumeView.exe` next to the script (or ensure it is on the `PATH`).
 
-A `requirements.txt` file might contain:
-
-```
-pystray
-pillow
-pycaw
-comtypes
-```
-
-(The script also uses `ctypes`, `tkinter`, `threading`, `subprocess`, `tempfile`, `json`, `os`, and `sys` – all are part of the standard library.)
 
 ## Usage
 

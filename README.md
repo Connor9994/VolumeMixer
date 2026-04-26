@@ -16,7 +16,7 @@ A compact Windows volume mixer with per-application volume control, device routi
 
 - **Windows** (tested on Windows 10 and 11)
 - **Python 3.6** or newer
-- **NirSoft SoundVolumeView.exe** – [download](https://www.nirsoft.net/utils/soundvolumeview.html) and place it in the same directory or add it to your system `PATH`
+- **NirSoft SoundVolumeView.exe** – [download](https://www.nirsoft.net/utils/sound_volume_view.html) and place it in the same directory or add it to your system `PATH`
 - Python dependencies listed in `requirements.txt`
 
 ## Installation

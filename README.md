@@ -4,29 +4,32 @@ A compact Windows volume mixer with per-application volume control, device routi
 
 ## Features
 
-- Per-application volume sliders with an exponential mapping (exponent 2.0) for finer low‑volume control
+- Per-application volume sliders with an exponential mapping (exponent 2.0) for finer low-volume control
 - Assign each application to a different audio output device via a dropdown menu
 - Master volume sliders for each render device, powered by NirSoft SoundVolumeView
-- System tray icon to hide or show the mixer window
-- Automatic detection of new audio sessions every 500 ms
-- Configurable ignored device list to hide unwanted entries
-- Lightweight, frameless window that positions itself at the bottom‑right corner of the screen
+- System tray icon (loaded from `icon.png`) to show or hide the mixer window
+- Automatic detection of new audio sessions every 500 milliseconds
+- Configurable ignored device list (`ignored_devices.txt`) to hide unwanted audio endpoints
+- Configurable ignored application list (`ignored_apps.txt`) to exclude specific programs from the mixer
+- Lightweight, frameless, always-on-top window that positions itself at the bottom-right corner of the work area (avoids the taskbar)
+- Debounced device volume updates for smooth dragging
 
 ## Requirements
 
 - **Windows** (tested on Windows 10 and 11)
 - **Python 3.6** or newer
-- **NirSoft SoundVolumeView.exe** – [download](https://www.nirsoft.net/utils/sound_volume_view.html) and place it in the same directory or add it to your system `PATH`
+- **NirSoft SoundVolumeView.exe** -- [download](https://www.nirsoft.net/utils/sound_volume_view.html) and place it in the same directory or add it to your system `PATH`
 - Python dependencies listed in `requirements.txt`
+- `icon.png` in the same directory as the script (used for the system tray icon)
 
 ## Installation
 
-1. Clone the repository or download the script (`volume_mixer.py`).
+1. Clone the repository or download the script (`VolumeMixer.py`).
 2. Install the required Python packages:
    ```bash
    pip install -r requirements.txt
    ```
-3. Place `SoundVolumeView.exe` next to the script (or ensure it is on the `PATH`).
+3. Place `SoundVolumeView.exe` and `icon.png` next to the script (or ensure `SoundVolumeView.exe` is on the `PATH`).
 
 
 ## Usage
@@ -34,27 +37,28 @@ A compact Windows volume mixer with per-application volume control, device routi
 Launch the mixer by running the script:
 
 ```bash
-python volume_mixer.py
+python VolumeMixer.py
 ```
 
-The window will appear at the bottom‑right corner of the primary monitor. If the window does not show, click the system tray icon and choose **Toggle Volume Mixer**.
+The window appears at the bottom-right corner of the primary monitor, above the taskbar. If the window does not show, click the system tray icon and choose **Toggle Volume Mixer**.
 
 ### App Mixer tab
 
 - Each running audio application gets a slider and a device dropdown.
 - Move the slider to adjust the application volume. The scale is exponential, giving more resolution at lower volumes.
 - Use the dropdown to route the application to a specific output device. Changes take effect immediately.
+- System processes (`SystemSounds`, `svchost.exe`) and entries listed in `ignored_apps.txt` are hidden from the list.
 
 ### Device Volumes tab
 
 - Lists every render device (excluding those in `ignored_devices.txt`).
-- Slide to change the master volume of a device. Updates are sent on release or continuously while dragging, with a short debounce.
+- Slide to change the master volume of a device. Updates are sent on release or continuously while dragging, with a 100-millisecond debounce.
 - The "Default Windows Device" entry represents the system default output device.
 
 ### Tray icon
 
-- **Left‑click** the tray icon (or right‑click and select **Toggle Volume Mixer**) to show or hide the window.
-- Right‑click the tray icon and choose **Quit** to exit the application completely.
+- Left-click the tray icon (or right-click and select **Toggle Volume Mixer**) to show or hide the window.
+- Right-click the tray icon and choose **Quit** to exit the application completely.
 
 The mixer continuously polls for new audio sessions. Newly launched applications appear automatically after at most 500 milliseconds.
 
@@ -69,12 +73,23 @@ Speakers (Realtek High Definition Audio)
 CABLE Input (VB-Audio Virtual Cable)
 ```
 
+### `ignored_apps.txt`
+
+Create a plain text file named `ignored_apps.txt` in the same directory. List the application names (without the `.exe` extension) you want to hide, one per line. For example:
+
+```
+chrome
+discord
+spotify
+```
+
 ## How It Works
 
 - **App volume** is controlled through the [pycaw](https://github.com/AndreMiras/pycaw) library, which wraps the Windows Core Audio API.
-- **Device volumes** and **per‑app device routing** are performed by calling SoundVolumeView with JSON export and command‑line switches.
-- The tray icon is built with [pystray](https://github.com/moses-palmer/pystray) and runs in a background thread.
-- The window uses `tkinter` and positions itself using `ctypes` calls to `SystemParametersInfoW`, avoiding the taskbar.
+- **Device volumes** and **per-app device routing** are performed by calling SoundVolumeView with JSON export and command-line switches. A fallback routing attempt uses a different type parameter if the primary call fails.
+- **App routing** detects the current device assignment for each application from the SoundVolumeView JSON output and pre-selects the matching entry in the dropdown.
+- The tray icon is loaded from `icon.png` via [Pillow](https://github.com/python-pillow/Pillow) and runs in a background thread with [pystray](https://github.com/moses-palmer/pystray).
+- The window uses `tkinter` with `overrideredirect(True)` for a frameless appearance and positions itself via `ctypes` calls to `SystemParametersInfoW`, avoiding the taskbar.
 
 ## Known Limitations
 
@@ -82,6 +97,7 @@ CABLE Input (VB-Audio Virtual Cable)
 - The mixer identifies applications by their executable name. Applications that stop playing audio may still appear until the program is restarted.
 - The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
 - SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
+- Closing the window sends it to the system tray instead of quitting. Use the **Quit** tray menu option to fully exit.
 
 ---
 

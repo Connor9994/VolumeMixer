@@ -462,7 +462,6 @@ def quit_app_from_tray(icon, item):
     icon.stop()
     if root and root.winfo_exists():
         root.after(0, root.destroy)
-    sys.exit(0)
 
 
 def run_tray_icon():

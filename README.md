@@ -69,8 +69,6 @@ Speakers (Realtek High Definition Audio)
 CABLE Input (VB-Audio Virtual Cable)
 ```
 
-Blank lines are ignored. After modifying the file, restart the program.
-
 ## How It Works
 
 - **App volume** is controlled through the [pycaw](https://github.com/AndreMiras/pycaw) library, which wraps the Windows Core Audio API.
@@ -84,10 +82,6 @@ Blank lines are ignored. After modifying the file, restart the program.
 - The mixer identifies applications by their executable name. Applications that stop playing audio may still appear until the program is restarted.
 - The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
 - SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
-
-## License
-
-MIT License. See `LICENSE` file for details.
 
 ---
 

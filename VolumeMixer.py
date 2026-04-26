@@ -249,7 +249,7 @@ def refresh_app_list():
     sessions = AudioUtilities.GetAllSessions()
     apps = []
     for session in sessions:
-        if session.Process and session.Process.name() not in [None, 'SystemSounds', 'svchost.exe']:
+        if session.Process and session.Process.name() not in [None, 'SystemSounds', 'svchost.exe','taskhostw.exe']:
             apps.append(session.Process.name())
     apps = sorted(list(set(apps)))
 
@@ -281,7 +281,7 @@ def add_app_row(app, sessions, device_names, app_current_device, max_name_len=15
     frame = ttk.Frame(mixer_frame)
     frame.pack(fill=tk.X, padx=10, pady=5)
 
-    label = ttk.Label(frame, text=clean_name_app, width=max_name_len, anchor='w')
+    label = ttk.Label(frame, text=clean_name_app.capitalize(), width=max_name_len, anchor='w')
     label.pack(side=tk.LEFT, padx=(0, 5))
 
     slider = ttk.Scale(frame, from_=0, to=100, orient=tk.HORIZONTAL,

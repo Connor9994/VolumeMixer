@@ -28,16 +28,6 @@ A compact Windows volume mixer with per-application volume control, device routi
    ```
 3. Place `SoundVolumeView.exe` next to the script (or ensure it is on the `PATH`).
 
-A `requirements.txt` file might contain:
-
-```
-pystray
-pillow
-pycaw
-comtypes
-```
-
-(The script also uses `ctypes`, `tkinter`, `threading`, `subprocess`, `tempfile`, `json`, `os`, and `sys` – all are part of the standard library.)
 
 ## Usage
 
@@ -79,8 +69,6 @@ Speakers (Realtek High Definition Audio)
 CABLE Input (VB-Audio Virtual Cable)
 ```
 
-Blank lines are ignored. After modifying the file, restart the program.
-
 ## How It Works
 
 - **App volume** is controlled through the [pycaw](https://github.com/AndreMiras/pycaw) library, which wraps the Windows Core Audio API.
@@ -95,10 +83,6 @@ Blank lines are ignored. After modifying the file, restart the program.
 - The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
 - SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
 
-## License
-
-MIT License. See `LICENSE` file for details.
-
 ---
 
-*Uses [SoundVolumeView](https://www.nirsoft.net/utils/soundvolumeview.html) by Nir Sofer, [pycaw](https://github.com/AndreMiras/pycaw), [pystray](https://github.com/moses-palmer/pystray), and [Pillow](https://python-pillow.org/).*
+*Uses [SoundVolumeView](https://www.nirsoft.net/utils/sound_volume_view.html) by Nir Sofer, [pycaw](https://github.com/AndreMiras/pycaw), [pystray](https://github.com/moses-palmer/pystray), and [Pillow](https://github.com/python-pillow/Pillow).*

@@ -880,7 +880,7 @@ def add_app_row(app, device_names, app_current_device, max_name_len=15):
     frame = ttk.Frame(mixer_frame)
     frame.pack(fill=tk.X, padx=10, pady=5)
 
-    label = ttk.Label(frame, text=clean_name_app.capitalize(), width=max_name_len, anchor='w')
+    label = ttk.Label(frame, text=clean_name_app, width=max_name_len, anchor='w')
     label.pack(side=tk.LEFT, padx=(0, 5))
 
     slider = ttk.Scale(frame, from_=0, to=100, orient=tk.HORIZONTAL)

@@ -2,14 +2,15 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import subprocess
-import sys
 import json
 import tempfile
 import os
 import ctypes
 from ctypes import wintypes
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageTk
+import sounddevice as sd
+import numpy as np
 
 
 # --- Configuration ---
@@ -17,6 +18,8 @@ EXPONENT = 2.0
 POLL_INTERVAL_MS = 2000
 IGNORED_DEVICES_FILE = "ignored_devices.txt" 
 IGNORED_APPS = "ignored_apps.txt"
+VIRTUAL_CABLE_NAME = "1"  # Virtual audio cable device for audio duplication
+DUPLICATE_BLOCKSIZE = 256                        # Audio buffer size for duplication (lower = less latency)
 
 # --- Global Variables ---
 root = None
@@ -26,13 +29,20 @@ app_widgets = {}
 sound_volume_view = "SoundVolumeView.exe"
 device_list = []            # list of (display_name, device_id)
 device_name_to_id = {}
-device_sliders = {}
 ignored_device_set = set()
 ignored_app_set = set()
 app_device_name = {}        # app_name -> current device display name
 app_explicit_device = {}
 app_exe_name = {}           # app_name (SVV display name) -> actual executable filename (e.g. 'chrome.exe')
 protected_apps = set()      # apps currently switching device, don't remove from GUI
+# duplicate popup tracking
+duplicate_widgets = {}       # app_name -> dict of widget references in duplicate tab
+duplicator_threads = {}      # app_name -> AudioDuplicator instance
+duplicator_protected = set() # apps with duplication enabled, don't remove from duplicate tab
+duplicator_targets = {}      # app_name -> list of target device display names
+app_original_device = {}    # app_name -> device display name before duplication started
+app_icon_cache = {}         # exe_path -> PIL Image (cached app icons)
+app_full_path = {}          # app_name -> full executable path
 
 
 def load_ignored_devices():                    
@@ -388,6 +398,404 @@ def set_app_volume(app_name, slider_value):
     _set_svv_app_volume(app_name, svv_volume)
 
 
+# --------------------- App Icon Extraction (Windows) ---------------------
+def extract_app_icon(exe_path, size=16):
+    """Extract icon from an executable file using Windows shell API.
+    Returns a PIL Image or None on failure.
+    """
+    # Check cache first
+    if exe_path in app_icon_cache:
+        return app_icon_cache[exe_path]
+
+    # Validate the executable exists
+    if not exe_path or not os.path.isfile(exe_path):
+        return None
+
+    try:
+        # Define SHFILEINFOW structure
+        class SHFILEINFOW(ctypes.Structure):
+            _fields_ = [
+                ('hIcon', wintypes.HANDLE),
+                ('iIcon', ctypes.c_int),
+                ('dwAttributes', ctypes.c_ulong),
+                ('szDisplayName', ctypes.c_wchar * 260),
+                ('szTypeName', ctypes.c_wchar * 80),
+            ]
+
+        SHGFI_ICON = 0x100
+        SHGFI_SMALLICON = 0x1
+        SHGFI_LARGEICON = 0x2
+
+        flags = SHGFI_ICON | (SHGFI_SMALLICON if size <= 16 else SHGFI_LARGEICON)
+
+        shfi = SHFILEINFOW()
+        # Set proper ctypes signatures for ALL GDI/user32 functions (prevents 64-bit overflow)
+        ctypes.windll.shell32.SHGetFileInfoW.restype = ctypes.c_void_p
+        ctypes.windll.user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.c_void_p]
+        ctypes.windll.gdi32.GetObjectW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+        ctypes.windll.user32.GetDC.restype = wintypes.HDC
+        ctypes.windll.gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        ctypes.windll.gdi32.CreateCompatibleDC.restype = wintypes.HDC
+        ctypes.windll.gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, wintypes.HANDLE, ctypes.c_uint]
+        ctypes.windll.gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+        ctypes.windll.gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        ctypes.windll.gdi32.SelectObject.restype = wintypes.HGDIOBJ
+        ctypes.windll.user32.DrawIconEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.HICON, ctypes.c_int, ctypes.c_int, ctypes.c_uint, wintypes.HBRUSH, ctypes.c_uint]
+        ctypes.windll.gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+        ctypes.windll.gdi32.GetDIBits.restype = ctypes.c_int
+        ctypes.windll.gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        ctypes.windll.gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        ctypes.windll.user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        ctypes.windll.user32.DestroyIcon.argtypes = [wintypes.HICON]
+        ret = ctypes.windll.shell32.SHGetFileInfoW(
+            exe_path, 0, ctypes.byref(shfi), ctypes.sizeof(shfi), flags
+        )
+
+        if not ret or not shfi.hIcon:
+            return None
+
+        hicon = shfi.hIcon
+
+        # Get icon info to extract the color bitmap
+        class ICONINFO(ctypes.Structure):
+            _fields_ = [
+                ('fIcon', wintypes.BOOL),
+                ('xHotspot', wintypes.DWORD),
+                ('yHotspot', wintypes.DWORD),
+                ('hbmMask', wintypes.HBITMAP),
+                ('hbmColor', wintypes.HBITMAP),
+            ]
+
+        icon_info = ICONINFO()
+        ctypes.windll.user32.GetIconInfo(hicon, ctypes.byref(icon_info))
+        hbm_color = icon_info.hbmColor
+
+        # Get bitmap dimensions
+        class BITMAP(ctypes.Structure):
+            _fields_ = [
+                ('bmType', ctypes.c_long),
+                ('bmWidth', ctypes.c_long),
+                ('bmHeight', ctypes.c_long),
+                ('bmWidthBytes', ctypes.c_long),
+                ('bmPlanes', ctypes.c_ushort),
+                ('bmBitsPixel', ctypes.c_ushort),
+                ('bmBits', ctypes.c_void_p),
+            ]
+
+        bmp = BITMAP()
+        ctypes.windll.gdi32.GetObjectW(hbm_color, ctypes.sizeof(bmp), ctypes.byref(bmp))
+        width, height = abs(bmp.bmWidth), abs(bmp.bmHeight)
+
+        if width == 0 or height == 0:
+            ctypes.windll.user32.DestroyIcon(hicon)
+            ctypes.windll.gdi32.DeleteObject(hbm_color)
+            ctypes.windll.gdi32.DeleteObject(icon_info.hbmMask)
+            return None
+
+        # Create screen DC and memory DC
+        hdc_screen = ctypes.windll.user32.GetDC(None)
+        hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_screen)
+
+        # Create a 32-bit DIBSection to receive pixel data
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [
+                ('biSize', ctypes.c_uint),
+                ('biWidth', ctypes.c_long),
+                ('biHeight', ctypes.c_long),
+                ('biPlanes', ctypes.c_ushort),
+                ('biBitCount', ctypes.c_ushort),
+                ('biCompression', ctypes.c_uint),
+                ('biSizeImage', ctypes.c_uint),
+                ('biXPelsPerMeter', ctypes.c_long),
+                ('biYPelsPerMeter', ctypes.c_long),
+                ('biClrUsed', ctypes.c_uint),
+                ('biClrImportant', ctypes.c_uint),
+            ]
+
+        class BITMAPINFO(ctypes.Structure):
+            _fields_ = [
+                ('bmiHeader', BITMAPINFOHEADER),
+                ('bmiColors', ctypes.c_uint * 3),
+            ]
+
+        bih = BITMAPINFOHEADER()
+        bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bih.biWidth = width
+        bih.biHeight = -height  # top-down bitmap
+        bih.biPlanes = 1
+        bih.biBitCount = 32
+        bih.biCompression = 0  # BI_RGB
+
+        bmi = BITMAPINFO()
+        bmi.bmiHeader = bih
+
+        pixel_size = width * height * 4
+        pixels = (ctypes.c_ubyte * pixel_size)()
+
+        hbmp_dib = ctypes.windll.gdi32.CreateDIBSection(
+            hdc_mem, ctypes.byref(bmi), 0, None, None, 0
+        )
+
+        if not hbmp_dib:
+            ctypes.windll.gdi32.DeleteDC(hdc_mem)
+            ctypes.windll.user32.ReleaseDC(None, hdc_screen)
+            ctypes.windll.user32.DestroyIcon(hicon)
+            ctypes.windll.gdi32.DeleteObject(hbm_color)
+            ctypes.windll.gdi32.DeleteObject(icon_info.hbmMask)
+            return None
+
+        # Select DIBSection into memory DC and draw the icon
+        hbmp_old = ctypes.windll.gdi32.SelectObject(hdc_mem, hbmp_dib)
+        ctypes.windll.user32.DrawIconEx(
+            hdc_mem, 0, 0, hicon, width, height, 0, None, 0x0003  # DI_NORMAL
+        )
+
+        # Extract pixel data
+        ctypes.windll.gdi32.GetDIBits(
+            hdc_mem, hbmp_dib, 0, height, pixels,
+            ctypes.byref(bmi), 0
+        )
+
+        # Convert to PIL Image
+        img = Image.frombuffer('RGBA', (width, height), bytes(pixels), 'raw', 'BGRA', 0, 1)
+
+        # Resize if needed
+        if size != width:
+            img = img.resize((size, size), Image.LANCZOS)
+
+        # Cache the result
+        app_icon_cache[exe_path] = img
+
+        # Cleanup
+        ctypes.windll.gdi32.SelectObject(hdc_mem, hbmp_old)
+        ctypes.windll.gdi32.DeleteObject(hbmp_dib)
+        ctypes.windll.gdi32.DeleteDC(hdc_mem)
+        ctypes.windll.user32.ReleaseDC(None, hdc_screen)
+        ctypes.windll.user32.DestroyIcon(hicon)
+        ctypes.windll.gdi32.DeleteObject(hbm_color)
+        if icon_info.hbmMask:
+            ctypes.windll.gdi32.DeleteObject(icon_info.hbmMask)
+
+        return img
+
+    except Exception as e:
+        print(f"Failed to extract icon for {exe_path}: {e}")
+        return None
+
+
+def get_render_device_names():
+    """Get list of render device display names (excluding Default and virtual cable)."""
+    return [name for name, _ in device_list
+            if name != "Default Windows Device"
+            and VIRTUAL_CABLE_NAME not in name]
+
+
+# --------------------- Audio Duplicator (Virtual Cable Loopback) ---------------------
+class AudioDuplicator:
+    """Capture audio from a virtual cable's loopback and play to multiple output devices.
+
+    Usage:
+        d = AudioDuplicator()
+        d.start(["Speakers", "Headphones"])   # begin capture/playback
+        d.stop()                               # end capture/playback
+    """
+
+    def __init__(self):
+        self._running = False
+        self._thread = None
+        self._input_stream = None
+        self._output_streams = []
+        self._target_device_names = []  # display names, in same order as output streams
+        self._channel_modes = []  # per-output: 'both', 'left', 'right', 'muted'
+
+    def start(self, target_device_names, channel_modes=None):
+        """Start capturing from virtual cable loopback and playing to target devices.
+
+        Args:
+            target_device_names: List of device display names to play to.
+            channel_modes: List of 'both', 'left', or 'right' — one per target device.
+                           Defaults to 'both' for all targets.
+
+        Returns True on success, False on failure.
+        """
+        if self._running:
+            return False
+
+        if channel_modes is None:
+            channel_modes = ['both'] * len(target_device_names)
+        self._target_device_names = list(target_device_names)
+        self._channel_modes = list(channel_modes)
+
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+
+        # Find the WASAPI host API index
+        wasapi_idx = None
+        for i, ha in enumerate(hostapis):
+            if "WASAPI" in ha["name"]:
+                wasapi_idx = i
+                break
+
+        if wasapi_idx is None:
+            print("AudioDuplicator: WASAPI host API not found")
+            return False
+
+        # Find the virtual cable's WASAPI loopback INPUT device
+        # (it appears as an input-capable device under the WASAPI host API)
+        cable_loopback_idx = None
+        for i, d in enumerate(devices):
+            if (d["hostapi"] == wasapi_idx
+                    and VIRTUAL_CABLE_NAME in d["name"]
+                    and d["max_input_channels"] > 0):
+                cable_loopback_idx = i
+                break
+
+        if cable_loopback_idx is None:
+            print(f"AudioDuplicator: virtual cable '{VIRTUAL_CABLE_NAME}' WASAPI loopback not found")
+            return False
+
+        # Find target output device indices (prefer WASAPI host API, fallback to any)
+        target_indices = []
+        synced_names = []
+        synced_modes = []
+        for idx, target_name in enumerate(target_device_names):
+            # First, try to find a WASAPI output device matching the name
+            found_idx = None
+            for i, d in enumerate(devices):
+                if (d["hostapi"] == wasapi_idx
+                        and target_name in d["name"]
+                        and d["max_output_channels"] > 0):
+                    found_idx = i
+                    break
+            # Fallback: search all host APIs
+            if found_idx is None:
+                for i, d in enumerate(devices):
+                    if target_name in d["name"] and d["max_output_channels"] > 0:
+                        found_idx = i
+                        break
+            if found_idx is not None:
+                target_indices.append(found_idx)
+                synced_names.append(target_name)
+                ch_mode = self._channel_modes[idx] if idx < len(self._channel_modes) else 'both'
+                synced_modes.append(ch_mode)
+            else:
+                print(f"AudioDuplicator: target device '{target_name}' not found")
+
+        if not target_indices:
+            print("AudioDuplicator: no valid target devices")
+            return False
+
+        # Keep device lists in sync with output streams
+        self._target_device_names = synced_names
+        self._channel_modes = synced_modes
+
+        samplerate = int(devices[cable_loopback_idx]["default_samplerate"])
+        self._running = True
+
+        # Start output streams (one per target device)
+        try:
+            for idx in target_indices:
+                stream = sd.OutputStream(
+                    device=idx,
+                    samplerate=samplerate,
+                    channels=2,
+                    dtype="float32",
+                    blocksize=DUPLICATE_BLOCKSIZE,
+                )
+                stream.start()
+                self._output_streams.append(stream)
+        except Exception as e:
+            print(f"AudioDuplicator: failed to create output streams: {e}")
+            self.stop()
+            return False
+
+        # Start input stream on the virtual cable's WASAPI loopback device
+        try:
+            self._input_stream = sd.InputStream(
+                device=cable_loopback_idx,
+                samplerate=samplerate,
+                channels=2,
+                dtype="float32",
+                blocksize=DUPLICATE_BLOCKSIZE,
+            )
+            self._input_stream.start()
+        except Exception as e:
+            print(f"AudioDuplicator: failed to create input stream: {e}")
+            self.stop()
+            return False
+
+        # Start worker thread: read from input, write to all outputs
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        print(f"AudioDuplicator: started, routing to {target_device_names}")
+        return True
+
+    def update_channel_mode(self, device_name, mode):
+        """Update the channel mode for a specific device while running."""
+        for i, name in enumerate(self._target_device_names):
+            if name == device_name:
+                self._channel_modes[i] = mode
+                return
+
+    def set_device_muted(self, device_name, muted):
+        """Mute or unmute a specific output device while running."""
+        for i, name in enumerate(self._target_device_names):
+            if name == device_name:
+                self._channel_modes[i] = 'muted' if muted else 'both'
+                return
+
+    def _run(self):
+        """Worker thread body — blocking read -> write loop with per-device channel routing."""
+        while self._running:
+            try:
+                data, overflowed = self._input_stream.read(DUPLICATE_BLOCKSIZE)
+                if overflowed:
+                    print("AudioDuplicator: input overflow")
+                for i, s in enumerate(self._output_streams):
+                    ch_mode = self._channel_modes[i] if i < len(self._channel_modes) else 'both'
+                    if ch_mode == 'both':
+                        s.write(data)
+                    elif ch_mode == 'left':
+                        # Left audio only through left speaker, right silent
+                        out = np.zeros_like(data)
+                        out[:, 0] = data[:, 0]
+                        s.write(out)
+                    elif ch_mode == 'right':
+                        # Right audio only through right speaker, left silent
+                        out = np.zeros_like(data)
+                        out[:, 1] = data[:, 1]
+                        s.write(out)
+                    elif ch_mode == 'muted':
+                        pass  # Device muted, skip write
+                    else:
+                        s.write(data)
+            except Exception as e:
+                if self._running:
+                    print(f"AudioDuplicator: error in run loop: {e}")
+
+    def stop(self):
+        """Stop all streams and the worker thread."""
+        self._running = False
+        if self._input_stream is not None:
+            try:
+                self._input_stream.stop()
+                self._input_stream.close()
+            except Exception:
+                pass
+            self._input_stream = None
+        for s in self._output_streams:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                pass
+        self._output_streams.clear()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2)
+            self._thread = None
+        print("AudioDuplicator: stopped")
+
+
 # --------------------- App list UI (Tab 1) ---------------------
 def refresh_app_list():
     if not mixer_frame or not mixer_frame.winfo_exists():
@@ -414,14 +822,16 @@ def refresh_app_list():
         return
 
     # Build mapping from SVV display name -> actual executable filename
-    global app_exe_name
+    global app_exe_name, app_full_path
     app_exe_name = {}
+    app_full_path = {}
     for item in data:
         if item.get("Type") == "Application":
             name = item.get("Name", "")
             proc_path = item.get("Process Path", "")
             if name and proc_path:
                 app_exe_name[name] = os.path.basename(proc_path)
+                app_full_path[name] = proc_path
 
     # Only include apps with at least one active audio session
     app_names = set()
@@ -508,6 +918,11 @@ def add_app_row(app, device_names, app_current_device, max_name_len=15):
     device_dropdown = ttk.Combobox(frame, textvariable=device_var,
                                    values=device_names, state='readonly',
                                    width=combo_width)
+    # --- Popup button (gear icon) for duplication + channel routing ---
+    dup_btn = ttk.Button(frame, text="⚙", width=3,
+                         command=lambda a=app: open_duplicate_popup(a))
+    dup_btn.pack(side=tk.RIGHT, padx=(2, 0))
+
     device_dropdown.pack(side=tk.RIGHT, padx=(5, 0))
 
     root.after(10, lambda dd=device_dropdown, v=current_device: dd.set(v))
@@ -532,10 +947,27 @@ def add_app_row(app, device_names, app_current_device, max_name_len=15):
 
     root.after(50, lambda a=app, s=slider: _update_slider_from_session(a, s))
 
+    # --- App icon ---
+    icon_img = None
+    full_exe_path = app_full_path.get(app, "")
+    if full_exe_path:
+        pil_img = extract_app_icon(full_exe_path, size=16)
+        if pil_img is not None:
+            icon_img = ImageTk.PhotoImage(pil_img)
+            icon_label = ttk.Label(frame, image=icon_img)
+            icon_label.pack(side=tk.LEFT, padx=(0, 3))
+        else:
+            icon_label = ttk.Label(frame, text="", width=2)
+            icon_label.pack(side=tk.LEFT, padx=(0, 3))
+    else:
+        icon_label = ttk.Label(frame, text="", width=2)
+        icon_label.pack(side=tk.LEFT, padx=(0, 3))
+
     app_widgets[app] = {
         'frame': frame,
         'slider': slider,
-        'dropdown': device_dropdown
+        'dropdown': device_dropdown,
+        'icon_img': icon_img,
     }
 
 
@@ -553,13 +985,14 @@ def poll_new_apps():
             data = json.load(f)
         os.unlink(tmp_path)
 
-        # Refresh executable name mapping
+        # Refresh executable name mapping and full path
         for item in data:
             if item.get("Type") == "Application":
                 name = item.get("Name", "")
                 proc_path = item.get("Process Path", "")
                 if name and proc_path:
                     app_exe_name[name] = os.path.basename(proc_path)
+                    app_full_path[name] = proc_path
 
         current_apps = set()
         for item in data:
@@ -573,7 +1006,8 @@ def poll_new_apps():
         # Removal of closed apps
         # Do NOT remove apps that are currently switching device (briefly inactive after routing)
         existing_apps = set(app_widgets.keys())
-        removed_apps = (existing_apps - current_apps) - protected_apps
+        # Protect both device-switching apps AND duplication-enabled apps from removal
+        removed_apps = (existing_apps - current_apps) - protected_apps - duplicator_protected
         for app in removed_apps:
             if app in app_widgets:
                 slider = app_widgets[app].get('slider')
@@ -583,6 +1017,24 @@ def poll_new_apps():
                 del app_widgets[app]
                 if app in app_device_name:
                     del app_device_name[app]
+            # Clean up popup/duplication state
+            if app in duplicate_widgets:
+                # Stop any active duplication
+                if app in duplicator_threads:
+                    _stop_duplication(app, None)
+                dup_data = duplicate_widgets.pop(app, None)
+                popup_win = dup_data.get('popup_window') if dup_data else None
+                if popup_win and popup_win.winfo_exists():
+                    try:
+                        popup_win.destroy()
+                    except tk.TclError:
+                        pass
+            if app in app_original_device:
+                del app_original_device[app]
+            if app in app_full_path:
+                del app_full_path[app]
+            if app in app_explicit_device:
+                del app_explicit_device[app]
         if removed_apps:
             resize_and_position()
 
@@ -626,7 +1078,6 @@ def poll_new_apps():
 def build_device_tab():
     for widget in device_tab_frame.winfo_children():
         widget.destroy()
-    device_sliders.clear()
 
     volumes = refresh_device_data()
     inner_frame = ttk.Frame(device_tab_frame)
@@ -658,9 +1109,307 @@ def build_device_tab():
                         set_device_volume(n, s.get())
                     ))
 
-        device_sliders[name] = slider
-
     resize_and_position()
+
+
+# --------------------- Duplication Popup ---------------------
+def open_duplicate_popup(app_name):
+    """Open a popup window for duplication and per-device channel routing, centered on the same monitor as the main GUI."""
+    try:
+        existing_popup = duplicate_widgets.get(app_name, {}).get('popup_window')
+        if existing_popup and existing_popup.winfo_exists():
+            existing_popup.lift()
+            existing_popup.focus_force()
+            return
+    except Exception:
+        pass
+
+    clean_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
+
+    try:
+        # Create popup
+        popup = tk.Toplevel()
+        popup.title(f"{clean_name} — Audio Routing")
+        popup.minsize(420, 220)
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+
+        # Define the cleanup function EARLY so it's available for the Close button
+        def on_popup_close():
+            """Clean up when popup is closed."""
+            if app_name in duplicate_widgets:
+                duplicate_widgets[app_name].pop('popup_window', None)
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+
+        # --- Layout ---
+        main_frame = ttk.Frame(popup, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Header
+        ttk.Label(main_frame, text=f"{clean_name} — Duplication & Channel Routing",
+                  font=('', 10, 'bold')).pack(anchor='w')
+
+        ttk.Label(main_frame,
+                  text=f"Route audio to multiple devices and choose left/right channel per device.\n"
+                        f"Uses virtual cable \"{VIRTUAL_CABLE_NAME}\" — must be installed.",
+                  wraplength=360, foreground='gray').pack(anchor='w', pady=(0, 10))
+
+        # Duplicate toggle
+        dup_var = tk.BooleanVar(value=app_name in duplicator_threads)
+        enable_cb = ttk.Checkbutton(main_frame, text="Enable Duplication", variable=dup_var)
+        enable_cb.pack(anchor='w', pady=(0, 10))
+
+        # --- Per-device rows ---
+        devices_frame = ttk.LabelFrame(main_frame, text="Output Devices", padding=5)
+        devices_frame.pack(fill=tk.BOTH, expand=True)
+
+        render_devices = get_render_device_names()
+        device_vars = {}
+        channel_vars = {}
+        status_label = ttk.Label(main_frame, text="", foreground='gray')
+        status_label.pack(anchor='w', pady=(5, 0))
+
+        if not render_devices:
+            ttk.Label(devices_frame, text="No output devices available.",
+                      foreground='gray').pack(padx=10, pady=10)
+        else:
+            header_row = ttk.Frame(devices_frame)
+            header_row.pack(fill=tk.X, pady=(0, 5))
+            ttk.Label(header_row, text="Device", width=20, anchor='w').pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Label(header_row, text="Channel", width=12, anchor='w').pack(side=tk.LEFT)
+
+            saved_targets = duplicator_targets.get(app_name, [])
+            saved_modes = duplicate_widgets.get(app_name, {}).get('channel_modes', {})
+
+            for dev in render_devices:
+                row = ttk.Frame(devices_frame)
+                row.pack(fill=tk.X, pady=2)
+
+                dev_var = tk.BooleanVar(value=dev in saved_targets)
+                cb = ttk.Checkbutton(row, text=dev, variable=dev_var, width=22)
+                cb.pack(side=tk.LEFT)
+
+                ch_var = tk.StringVar(value=saved_modes.get(dev, 'both'))
+                ch_combo = ttk.Combobox(row, textvariable=ch_var,
+                                        values=['both', 'left', 'right'],
+                                        state='readonly', width=10)
+                ch_combo.pack(side=tk.LEFT, padx=(5, 0))
+
+                # Live update: device checkbox mutes/unmutes in real-time
+                def make_device_toggle(d, dv, cv):
+                    def on_device_toggle():
+                        if app_name in duplicator_threads:
+                            dup = duplicator_threads[app_name]
+                            muted = not dv.get()
+                            dup.set_device_muted(d, muted)
+                            # Re-apply channel mode when unmuting
+                            if not muted:
+                                dup.update_channel_mode(d, cv.get())
+                    return on_device_toggle
+                cb.config(command=make_device_toggle(dev, dev_var, ch_var))
+
+                # Live update: channel dropdown changes mode in real-time
+                def make_channel_change(d, cv):
+                    def on_channel_change(event=None):
+                        if app_name in duplicator_threads:
+                            dup = duplicator_threads[app_name]
+                            dup.update_channel_mode(d, cv.get())
+                    return on_channel_change
+                ch_combo.bind('<<ComboboxSelected>>', make_channel_change(dev, ch_var))
+
+                device_vars[dev] = dev_var
+                channel_vars[dev] = ch_var
+
+            # Select All / Clear All buttons
+            btn_row = ttk.Frame(devices_frame)
+            btn_row.pack(fill=tk.X, pady=(5, 0))
+
+            def select_all():
+                for v in device_vars.values():
+                    v.set(True)
+                if app_name in duplicator_threads:
+                    for d, v in device_vars.items():
+                        dup = duplicator_threads[app_name]
+                        dup.set_device_muted(d, False)
+
+            def clear_all():
+                for v in device_vars.values():
+                    v.set(False)
+                if app_name in duplicator_threads:
+                    for d, v in device_vars.items():
+                        dup = duplicator_threads[app_name]
+                        dup.set_device_muted(d, True)
+
+            ttk.Button(btn_row, text="Select All", command=select_all).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Button(btn_row, text="Clear All", command=clear_all).pack(side=tk.LEFT)
+
+        # Restore status if already duplicating
+        if app_name in duplicator_threads and duplicator_threads[app_name]._running:
+            saved_targets = duplicator_targets.get(app_name, [])
+            saved_modes = duplicate_widgets.get(app_name, {}).get('channel_modes', {})
+            details = []
+            for dev in saved_targets:
+                mode = saved_modes.get(dev, 'both')
+                details.append(f"{dev} ({mode})" if mode != 'both' else dev)
+            status_label.config(text=f"Duplicating to: {', '.join(details)}", foreground='green')
+
+        # --- Toggle Handler ---
+        def on_toggle(*_):
+            if dup_var.get():
+                selected_devices = [d for d, v in device_vars.items() if v.get()]
+                if not selected_devices:
+                    selected_devices = list(device_vars.keys())
+                    for v in device_vars.values():
+                        v.set(True)
+
+                channel_modes = [channel_vars[d].get() for d in selected_devices]
+
+                duplicate_widgets.setdefault(app_name, {})['channel_modes'] = {
+                    d: channel_vars[d].get() for d in device_vars
+                }
+
+                status_label.config(text="Starting...", foreground='gray')
+                _start_duplication(app_name, selected_devices, channel_modes, status_label)
+            else:
+                status_label.config(text="Stopping...", foreground='gray')
+                _stop_duplication(app_name, status_label)
+
+        dup_var.trace_add('write', on_toggle)
+
+        duplicate_widgets.setdefault(app_name, {})['popup_window'] = popup
+
+        # Close button (now safe to reference on_popup_close)
+        close_btn = ttk.Button(main_frame, text="Close", command=on_popup_close)
+        close_btn.pack(anchor='e', pady=(5, 0))
+
+        # ----- Center the popup on the monitor where the main GUI is -----
+        if root.winfo_exists():
+            popup.update_idletasks()
+            pw = popup.winfo_reqwidth()
+            ph = popup.winfo_reqheight()
+
+            # Get monitor work area for the monitor that contains the root window
+            m_left, m_top, m_right, m_bottom = get_work_area(root)
+
+            center_x = m_left + (m_right - m_left) // 2
+            center_y = m_top + (m_bottom - m_top) // 2
+
+            px = center_x - pw // 2
+            py = center_y - ph // 2
+
+            # Keep inside the work area
+            px = max(m_left, min(px, m_right - pw))
+            py = max(m_top, min(py, m_bottom - ph))
+
+            popup.geometry(f"+{px}+{py}")
+
+        popup.lift()
+        popup.focus_force()
+
+        popup.protocol("WM_DELETE_WINDOW", on_popup_close)
+
+    except Exception as e:
+        print(f"Error opening popup for {app_name}: {e}")
+
+def _get_duplicate_device_id(app_name):
+    """Get the virtual cable device ID for routing an app's audio to the cable."""
+    cable_id = device_name_to_id.get(VIRTUAL_CABLE_NAME)
+    if cable_id:
+        return cable_id
+    # Fallback: find the virtual cable in SVV data
+    try:
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
+            tmp_path = tmp.name
+        subprocess.run([sound_volume_view, "/sjson", tmp_path],
+                       capture_output=True, check=True)
+        with open(tmp_path, 'r', encoding='utf-16') as f:
+            data = json.load(f)
+        os.unlink(tmp_path)
+        for item in data:
+            if item.get("Type") == "Device" and VIRTUAL_CABLE_NAME in item.get("Name", ""):
+                return item.get("Command-Line Friendly ID")
+    except Exception as e:
+        print(f"Error finding virtual cable device: {e}")
+    return None
+
+def _start_duplication(app_name, target_devices, channel_modes, status_label):
+    """Route app to virtual cable and start audio capture/playback to target devices.
+    
+    channel_modes: list of 'both', 'left', or 'right' — one per target device.
+    """
+    try:
+        # Save the original device BEFORE routing to virtual cable
+        app_original_device[app_name] = app_device_name.get(app_name, "Default Windows Device")
+
+        # Route the app to the virtual cable
+        cable_id = _get_duplicate_device_id(app_name)
+        if not cable_id:
+            status_label.config(text="Virtual cable not found!", foreground='red')
+            return
+
+        set_app_device(app_name, cable_id, VIRTUAL_CABLE_NAME)
+
+        # Protect from removal during the brief inactive period
+        duplicator_protected.add(app_name)
+        root.after(3000, lambda: duplicator_protected.discard(app_name) if app_name in duplicator_protected else None)
+
+        # Start the audio duplicator
+        dup = AudioDuplicator()
+        success = dup.start(target_devices, channel_modes)
+        if success:
+            duplicator_threads[app_name] = dup
+            duplicator_targets[app_name] = list(target_devices)
+            target_details = []
+            for i, dev in enumerate(target_devices):
+                mode = channel_modes[i] if i < len(channel_modes) else 'both'
+                if mode == 'both':
+                    target_details.append(dev)
+                else:
+                    target_details.append(f"{dev} ({mode})")
+            status_label.config(
+                text=f"Duplicating to: {', '.join(target_details)}",
+                foreground='green'
+            )
+        else:
+            status_label.config(
+                text="Failed to start (check virtual cable)", foreground='red'
+            )
+    except Exception as e:
+        print(f"Error in _start_duplication for {app_name}: {e}")
+        try:
+            status_label.config(text=f"Error: {e}", foreground='red')
+        except Exception:
+            pass
+
+def _stop_duplication(app_name, status_label):
+    """Stop audio duplication and restore app to original device."""
+
+    # Stop the audio duplicator
+    dup = duplicator_threads.pop(app_name, None)
+    duplicator_targets.pop(app_name, None)
+    if dup:
+        dup.stop()
+
+    # Restore the app to the device it was on before duplication
+    original_device = app_original_device.pop(app_name, None)
+    if original_device and original_device in device_name_to_id:
+        restore_id = device_name_to_id[original_device]
+        set_app_device(app_name, restore_id, original_device)
+    else:
+        # Fallback to default Windows device
+        default_id = device_name_to_id.get("Default Windows Device")
+        if not default_id:
+            default_id = _get_default_render_device_id()
+        if default_id:
+            set_app_device(app_name, default_id, "Default Windows Device")
+
+    if status_label and status_label.winfo_exists():
+        status_label.config(text="", foreground='gray')
+
+    duplicator_protected.discard(app_name)
 
 
 # --------------------- Tab change handling ---------------------

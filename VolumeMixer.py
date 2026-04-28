@@ -11,7 +11,10 @@ import pystray
 from PIL import Image, ImageTk
 import sounddevice as sd
 import numpy as np
-from night_light import get_night_light_state, set_night_light_state
+from nightlight import NightLight
+
+# Global NightLight instance
+_night_light = NightLight()
 
 
 # --- Configuration ---
@@ -1128,32 +1131,35 @@ def build_misc_tab():
     nl_frame.pack(fill=tk.X, pady=(0, 10))
 
     # Try to read current state
-    nl_enabled, nl_strength = get_night_light_state()
-    if nl_enabled is None:
-        nl_enabled = False
-    if nl_strength is None:
-        nl_strength = 50
+    nl_enabled = _night_light.enabled()
+    nl_strength = _night_light.get_strength()
 
     nl_var = tk.BooleanVar(value=nl_enabled)
 
     def on_nl_toggle():
         """Called when the Night Light checkbox is toggled."""
-        desired = nl_var.get()
-        strength = nl_strength_slider.get()
-        success = set_night_light_state(desired, int(strength))
-        if not success:
-            # If toggle failed, revert the checkbox
+        try:
+            desired = nl_var.get()
+            if desired:
+                _night_light.enable()
+            else:
+                _night_light.disable()
+            # Also apply current strength
+            strength = int(nl_strength_slider.get())
+            if desired:
+                _night_light.set_strength(strength)
+            nl_status.config(text="", foreground='gray')
+        except RuntimeError as e:
             nl_var.set(not desired)
-            nl_status.config(text="Toggle failed — requires Windows 10 1803+", foreground='red')
+            nl_status.config(text=f"Toggle failed — {e}", foreground='red')
 
-    nl_cb = ttk.Checkbutton(nl_frame, text="Night Light", variable=nl_var, command=on_nl_toggle)
-    nl_cb.pack(anchor='w', pady=(0, 5))
+    # Row with checkbox + strength slider on the same line
+    nl_row = ttk.Frame(nl_frame)
+    nl_row.pack(fill=tk.X)
 
-    # Strength slider row
-    strength_row = ttk.Frame(nl_frame)
-    strength_row.pack(fill=tk.X, pady=(0, 5))
+    nl_cb = ttk.Checkbutton(nl_row, text="Night Light", variable=nl_var, command=on_nl_toggle)
+    nl_cb.pack(side=tk.LEFT, padx=(0, 8))
 
-    ttk.Label(strength_row, text="Strength:").pack(side=tk.LEFT, padx=(0, 8))
     nl_strength_var = tk.DoubleVar(value=nl_strength)
 
     def on_strength_change(event=None):
@@ -1161,14 +1167,17 @@ def build_misc_tab():
         val = int(nl_strength_slider.get())
         nl_strength_label.config(text=f"{val}%")
         if nl_var.get():
-            set_night_light_state(True, val)
+            try:
+                _night_light.set_strength(val)
+            except RuntimeError:
+                pass
 
-    nl_strength_slider = ttk.Scale(strength_row, from_=0, to=100,
+    nl_strength_slider = ttk.Scale(nl_row, from_=0, to=100,
                                     orient=tk.HORIZONTAL, variable=nl_strength_var,
                                     command=on_strength_change)
     nl_strength_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
-    nl_strength_label = ttk.Label(strength_row, text=f"{int(nl_strength)}%", width=4)
+    nl_strength_label = ttk.Label(nl_row, text=f"{int(nl_strength)}%", width=4)
     nl_strength_label.pack(side=tk.LEFT)
 
     nl_status = ttk.Label(nl_frame, text="", foreground='gray')
@@ -1179,13 +1188,12 @@ def build_misc_tab():
         if not misc_tab_frame or not misc_tab_frame.winfo_exists():
             return
         try:
-            cur_enabled, cur_strength = get_night_light_state()
-            if cur_enabled is not None:
-                # Update checkbox without triggering the toggle callback
-                nl_var.set(cur_enabled)
-            if cur_strength is not None:
-                nl_strength_slider.set(cur_strength)
-                nl_strength_label.config(text=f"{int(cur_strength)}%")
+            cur_enabled = _night_light.enabled()
+            cur_strength = _night_light.get_strength()
+            # Update checkbox without triggering the toggle callback
+            nl_var.set(cur_enabled)
+            nl_strength_slider.set(cur_strength)
+            nl_strength_label.config(text=f"{int(cur_strength)}%")
         except Exception:
             pass
         root.after(10000, refresh_nl_state)  # Refresh every 10s

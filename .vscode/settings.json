@@ -1,3 +1,14 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "search.exclude": {
+        "VolumeMixer.build": true,
+        "VolumeMixer.dist": true,
+        "**/__pycache__": true,
+        "Fixes": true
+    },
+    "files.exclude": {
+        "VolumeMixer.build": true,
+        "VolumeMixer.dist": true,
+        "Fixes": true
+    }
 }

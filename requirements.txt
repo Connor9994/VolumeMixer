@@ -2,5 +2,6 @@ comtypes==1.4.16
 Pillow==12.2.0
 pycaw==20251023
 pystray==0.19.5
-sounddevice==0.5.1
+sounddevice==0.5.5
 numpy==2.2.4
+winrt-Windows.Graphics.Display==3.2.1

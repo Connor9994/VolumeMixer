@@ -11,6 +11,7 @@ import pystray
 from PIL import Image, ImageTk
 import sounddevice as sd
 import numpy as np
+from night_light import get_night_light_state, set_night_light_state
 
 
 # --- Configuration ---
@@ -25,6 +26,7 @@ DUPLICATE_BLOCKSIZE = 256                        # Audio buffer size for duplica
 root = None
 mixer_frame = None          # frame holding the app list (inside tab 1)
 device_tab_frame = None     # frame holding the device list (tab 2)
+misc_tab_frame = None       # frame holding misc features (tab 3)
 app_widgets = {}
 sound_volume_view = "SoundVolumeView.exe"
 device_list = []            # list of (display_name, device_id)
@@ -1112,6 +1114,87 @@ def build_device_tab():
     resize_and_position()
 
 
+# --------------------- Misc / Utilities tab (Tab 3) ---------------------
+def build_misc_tab():
+    """Build the Misc/Utilities tab with Night Light toggle and strength slider."""
+    for widget in misc_tab_frame.winfo_children():
+        widget.destroy()
+
+    inner = ttk.Frame(misc_tab_frame, padding=10)
+    inner.pack(fill=tk.BOTH, expand=True)
+
+    # --- Night Light Section ---
+    nl_frame = ttk.LabelFrame(inner, text="Night Light", padding=10)
+    nl_frame.pack(fill=tk.X, pady=(0, 10))
+
+    # Try to read current state
+    nl_enabled, nl_strength = get_night_light_state()
+    if nl_enabled is None:
+        nl_enabled = False
+    if nl_strength is None:
+        nl_strength = 50
+
+    nl_var = tk.BooleanVar(value=nl_enabled)
+
+    def on_nl_toggle():
+        """Called when the Night Light checkbox is toggled."""
+        desired = nl_var.get()
+        strength = nl_strength_slider.get()
+        success = set_night_light_state(desired, int(strength))
+        if not success:
+            # If toggle failed, revert the checkbox
+            nl_var.set(not desired)
+            nl_status.config(text="Toggle failed — requires Windows 10 1803+", foreground='red')
+
+    nl_cb = ttk.Checkbutton(nl_frame, text="Night Light", variable=nl_var, command=on_nl_toggle)
+    nl_cb.pack(anchor='w', pady=(0, 5))
+
+    # Strength slider row
+    strength_row = ttk.Frame(nl_frame)
+    strength_row.pack(fill=tk.X, pady=(0, 5))
+
+    ttk.Label(strength_row, text="Strength:").pack(side=tk.LEFT, padx=(0, 8))
+    nl_strength_var = tk.DoubleVar(value=nl_strength)
+
+    def on_strength_change(event=None):
+        """Called when the Night Light strength slider changes."""
+        val = int(nl_strength_slider.get())
+        nl_strength_label.config(text=f"{val}%")
+        if nl_var.get():
+            set_night_light_state(True, val)
+
+    nl_strength_slider = ttk.Scale(strength_row, from_=0, to=100,
+                                    orient=tk.HORIZONTAL, variable=nl_strength_var,
+                                    command=on_strength_change)
+    nl_strength_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+    nl_strength_label = ttk.Label(strength_row, text=f"{int(nl_strength)}%", width=4)
+    nl_strength_label.pack(side=tk.LEFT)
+
+    nl_status = ttk.Label(nl_frame, text="", foreground='gray')
+    nl_status.pack(anchor='w')
+
+    # Refresh current state display on an interval
+    def refresh_nl_state():
+        if not misc_tab_frame or not misc_tab_frame.winfo_exists():
+            return
+        try:
+            cur_enabled, cur_strength = get_night_light_state()
+            if cur_enabled is not None:
+                # Update checkbox without triggering the toggle callback
+                nl_var.set(cur_enabled)
+            if cur_strength is not None:
+                nl_strength_slider.set(cur_strength)
+                nl_strength_label.config(text=f"{int(cur_strength)}%")
+        except Exception:
+            pass
+        root.after(10000, refresh_nl_state)  # Refresh every 10s
+
+    root.after(10000, refresh_nl_state)
+
+    resize_and_position()
+
+
 # --------------------- Duplication Popup ---------------------
 def open_duplicate_popup(app_name):
     """Open a popup window for duplication and per-device channel routing, centered on the same monitor as the main GUI."""
@@ -1463,7 +1546,7 @@ def run_tray_icon():
 
 # --------------------- Main GUI ---------------------
 def create_mixer_window():
-    global root, mixer_frame, device_tab_frame
+    global root, mixer_frame, device_tab_frame, misc_tab_frame
     root = tk.Tk()
     root.title("Volume Mixer")
     root.minsize(0, 0)
@@ -1480,12 +1563,16 @@ def create_mixer_window():
     device_tab_frame = ttk.Frame(notebook)
     notebook.add(device_tab_frame, text="Device Volumes")
 
+    misc_tab_frame = ttk.Frame(notebook)
+    notebook.add(misc_tab_frame, text="Misc")
+
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
     load_ignored_devices()
     load_ignored_apps()
     refresh_app_list()
     build_device_tab()
+    build_misc_tab()
     root.after(POLL_INTERVAL_MS, poll_new_apps)
     root.after(200, resize_and_position)
 

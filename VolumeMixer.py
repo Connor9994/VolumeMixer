@@ -1140,18 +1140,22 @@ def build_misc_tab():
         """Called when the Night Light checkbox is toggled."""
         try:
             desired = nl_var.get()
+            # Use toggle() to flip the night light state
+            if desired != _night_light.enabled():
+                _night_light.toggle()
+            # Apply the slider strength if enabling
             if desired:
-                _night_light.enable()
-            else:
-                _night_light.disable()
-            # Also apply current strength
-            strength = int(nl_strength_slider.get())
-            if desired:
+                strength = int(nl_strength_slider.get())
                 _night_light.set_strength(strength)
             nl_status.config(text="", foreground='gray')
         except RuntimeError as e:
             nl_var.set(not desired)
             nl_status.config(text=f"Toggle failed — {e}", foreground='red')
+        except Exception as e:
+            nl_var.set(not desired)
+            nl_status.config(text=f"Unexpected error: {e}", foreground='red')
+            import traceback
+            traceback.print_exc()
 
     # Row with checkbox + strength slider on the same line
     nl_row = ttk.Frame(nl_frame)

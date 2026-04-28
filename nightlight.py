@@ -195,40 +195,13 @@ class NightLight:
                 new_data[i] = (new_data[i] + 1) % 256
                 break
 
-        # Update the settings registry
+        # Update the registry
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._settings_key_path, 0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, "Data", 0, winreg.REG_BINARY, bytes(new_data))
             winreg.CloseKey(key)
         except Exception as e:
             raise RuntimeError(f"Failed to update Night Light strength: {e}")
-
-        # Also update the state key's temperature bytes (positions 23-24)
-        # so that Windows picks up the change immediately
-        self._update_state_temperature(temp_lo, temp_hi)
-
-    def _update_state_temperature(self, temp_lo: int, temp_hi: int) -> None:
-        """Update the temperature bytes in the state registry key."""
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._state_key_path, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE)
-            state_data, _ = winreg.QueryValueEx(key, "Data")
-            state_data = bytearray(state_data)
-
-            # Only update if the state key has temperature positions (43+ bytes, night light on)
-            if len(state_data) >= 25:
-                state_data[23] = temp_lo
-                state_data[24] = temp_hi
-
-                # Increment timestamp bytes
-                for i in range(10, 15):
-                    if state_data[i] != 0xff:
-                        state_data[i] = (state_data[i] + 1) % 256
-                        break
-
-                winreg.SetValueEx(key, "Data", 0, winreg.REG_BINARY, bytes(state_data))
-            winreg.CloseKey(key)
-        except Exception:
-            pass  # State key may not have temperature positions when night light is off
 
 
 # Example usage

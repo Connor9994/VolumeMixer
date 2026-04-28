@@ -11,10 +11,6 @@ import pystray
 from PIL import Image, ImageTk
 import sounddevice as sd
 import numpy as np
-from nightlight import NightLight
-
-# Global NightLight instance
-_night_light = NightLight()
 
 
 # --- Configuration ---
@@ -24,6 +20,7 @@ IGNORED_DEVICES_FILE = "ignored_devices.txt"
 IGNORED_APPS = "ignored_apps.txt"
 VIRTUAL_CABLE_NAME = "1"  # Virtual audio cable device for audio duplication
 DUPLICATE_BLOCKSIZE = 256                        # Audio buffer size for duplication (lower = less latency)
+FLUX_PATH = r"flux\flux.exe"
 
 # --- Global Variables ---
 root = None
@@ -1079,6 +1076,7 @@ def poll_new_apps():
         print(f"Error in poll_new_apps: {e}")
 
 
+
 # --------------------- Device Volume tab (Tab 2) ---------------------
 def build_device_tab():
     for widget in device_tab_frame.winfo_children():
@@ -1117,94 +1115,128 @@ def build_device_tab():
     resize_and_position()
 
 
+
 # --------------------- Misc / Utilities tab (Tab 3) ---------------------
 def build_misc_tab():
-    """Build the Misc/Utilities tab with Night Light toggle and strength slider."""
+    """Build the Misc/Utilities tab using portable f.lux CLI."""
     for widget in misc_tab_frame.winfo_children():
         widget.destroy()
 
     inner = ttk.Frame(misc_tab_frame, padding=10)
     inner.pack(fill=tk.BOTH, expand=True)
 
-    # --- Night Light Section ---
-    nl_frame = ttk.LabelFrame(inner, text="Night Light", padding=10)
+    # --- Night Light Section (f.lux) ---
+    nl_frame = ttk.LabelFrame(inner, text="Night Light (f.lux)", padding=10)
     nl_frame.pack(fill=tk.X, pady=(0, 10))
 
-    # Try to read current state
-    nl_enabled = _night_light.enabled()
-    nl_strength = _night_light.get_strength()
+    # Initial state: we assume f.lux is enabled on startup; adjust if needed
+    initial_enabled = True
+    initial_strength = 50   # percent, will map to a middle temperature
 
-    nl_var = tk.BooleanVar(value=nl_enabled)
+    enabled_var = tk.BooleanVar(value=initial_enabled)
+    strength_var = tk.DoubleVar(value=initial_strength)
 
-    def on_nl_toggle():
-        """Called when the Night Light checkbox is toggled."""
+    # Widgets
+    top_row = ttk.Frame(nl_frame)
+    top_row.pack(fill=tk.X, pady=(0, 5))
+
+    check_btn = ttk.Checkbutton(top_row, text="Enable Night Light", variable=enabled_var)
+    check_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+    strength_label = ttk.Label(top_row, text=f"{int(initial_strength)}%", width=4)
+    strength_label.pack(side=tk.RIGHT)
+
+    strength_slider = ttk.Scale(top_row, from_=0, to=100, orient=tk.HORIZONTAL,
+                                 variable=strength_var)
+    strength_slider.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(0, 8))
+
+    # Status label for error messages
+    status_label = ttk.Label(nl_frame, text="", foreground="gray")
+    status_label.pack(anchor="w")
+
+    # --- Helper: map slider percent to Kelvin ---
+    # Range: 0% = 6500 K, 100% = 1900 K
+    MIN_TEMP = 1900
+    MAX_TEMP = 6500
+
+    def percent_to_kelvin(percent):
+        """Linearly convert 0-100 to a colour temperature (1900-6500 K)."""
+        return round(MAX_TEMP - (percent / 100.0) * (MAX_TEMP - MIN_TEMP))
+
+    # --- Helper: run a flux CLI command ---
+    def _run_flux(args: list):
+        """Run flux.exe with arguments, return True if successful."""
         try:
-            desired = nl_var.get()
-            # Use toggle() to flip the night light state
-            if desired != _night_light.enabled():
-                _night_light.toggle()
-            # Apply the slider strength if enabling
-            if desired:
-                strength = int(nl_strength_slider.get())
-                _night_light.set_strength(strength)
-            nl_status.config(text="", foreground='gray')
-        except RuntimeError as e:
-            nl_var.set(not desired)
-            nl_status.config(text=f"Toggle failed — {e}", foreground='red')
+            subprocess.run(
+                [FLUX_PATH] + args,
+                check=True,
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"f.lux command failed: {e}")
+            return False
+        except FileNotFoundError:
+            print(f"f.lux executable not found at {FLUX_PATH}")
+            return False
+
+    # --- Update slider enabled/disabled state ---
+    def set_slider_state():
+        if enabled_var.get():
+            strength_slider.config(state=tk.NORMAL)
+        else:
+            strength_slider.config(state=tk.DISABLED)
+        status_label.config(text="")
+
+    set_slider_state()
+
+    # --- Enable/disable callback ---
+    def on_enable_toggle(*args):
+        try:
+            if enabled_var.get():
+                success = _run_flux(["/enable"])
+                if success:
+                    # Re-apply the current slider temperature
+                    kelvin = percent_to_kelvin(strength_var.get())
+                    _run_flux(["/setcolortemp", str(kelvin)])
+                else:
+                    raise RuntimeError("enable failed")
+            else:
+                success = _run_flux(["/disable"])
+                if not success:
+                    raise RuntimeError("disable failed")
         except Exception as e:
-            nl_var.set(not desired)
-            nl_status.config(text=f"Unexpected error: {e}", foreground='red')
-            import traceback
-            traceback.print_exc()
+            # Revert checkbox if operation failed
+            enabled_var.set(not enabled_var.get())
+            status_label.config(text=f"Toggle failed: {e}", foreground="red")
+        finally:
+            set_slider_state()
 
-    # Row with checkbox + strength slider on the same line
-    nl_row = ttk.Frame(nl_frame)
-    nl_row.pack(fill=tk.X)
+    enabled_var.trace_add("write", on_enable_toggle)
 
-    nl_cb = ttk.Checkbutton(nl_row, text="Night Light", variable=nl_var, command=on_nl_toggle)
-    nl_cb.pack(side=tk.LEFT, padx=(0, 8))
-
-    nl_strength_var = tk.DoubleVar(value=nl_strength)
-
-    def on_strength_change(event=None):
-        """Called when the Night Light strength slider changes."""
-        val = int(nl_strength_slider.get())
-        nl_strength_label.config(text=f"{val}%")
-        if nl_var.get():
-            try:
-                _night_light.set_strength(val)
-            except RuntimeError:
-                pass
-
-    nl_strength_slider = ttk.Scale(nl_row, from_=0, to=100,
-                                    orient=tk.HORIZONTAL, variable=nl_strength_var,
-                                    command=on_strength_change)
-    nl_strength_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-
-    nl_strength_label = ttk.Label(nl_row, text=f"{int(nl_strength)}%", width=4)
-    nl_strength_label.pack(side=tk.LEFT)
-
-    nl_status = ttk.Label(nl_frame, text="", foreground='gray')
-    nl_status.pack(anchor='w')
-
-    # Refresh current state display on an interval
-    def refresh_nl_state():
-        if not misc_tab_frame or not misc_tab_frame.winfo_exists():
-            return
-        try:
-            cur_enabled = _night_light.enabled()
-            cur_strength = _night_light.get_strength()
-            # Update checkbox without triggering the toggle callback
-            nl_var.set(cur_enabled)
-            nl_strength_slider.set(cur_strength)
-            nl_strength_label.config(text=f"{int(cur_strength)}%")
-        except Exception:
+    # --- Strength change callback ---
+    def on_strength_change(*args):
+        val = int(strength_var.get())
+        strength_label.config(text=f"{val}%")
+        kelvin = percent_to_kelvin(val)
+        # Only apply if night light is enabled
+        if enabled_var.get():
+            success = _run_flux(["/setcolortemp", str(kelvin)])
+            if not success:
+                status_label.config(text="Failed to set temperature", foreground="red")
+        else:
+            # Optionally, you can store the value for when it re-enables
             pass
-        root.after(10000, refresh_nl_state)  # Refresh every 10s
 
-    root.after(10000, refresh_nl_state)
+    strength_var.trace_add("write", on_strength_change)
+
+    # --- Periodic sync? Not trivial with f.lux CLI, so we skip it.
+    #     The cached state is assumed correct unless externally changed.
+    #     If you want to sync, you could restart f.lux with a known value.
 
     resize_and_position()
+
 
 
 # --------------------- Duplication Popup ---------------------

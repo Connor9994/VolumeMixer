@@ -1126,7 +1126,7 @@ def build_misc_tab():
     inner.pack(fill=tk.BOTH, expand=True)
 
     # --- Night Light Section (f.lux) ---
-    nl_frame = ttk.LabelFrame(inner, text="Night Light (f.lux)", padding=10)
+    nl_frame = ttk.LabelFrame(inner, text="Night Light", padding=10)
     nl_frame.pack(fill=tk.X, pady=(0, 10))
 
     initial_enabled = True

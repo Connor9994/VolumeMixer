@@ -4,10 +4,6 @@ A compact Windows volume mixer with per-application volume control, device routi
 
 ## Features
 
-![alt text](image.png)
-![alt text](image-1.png)
-![alt text](image-2.png)
-
 - Per-application volume sliders with an exponential mapping (exponent 2.0) for finer low-volume control
 - Assign each application to a different audio output device via a dropdown menu
 - Master volume sliders for each render device, powered by NirSoft SoundVolumeView

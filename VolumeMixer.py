@@ -21,7 +21,6 @@ IGNORED_APPS = "ignored_apps.txt"
 VIRTUAL_CABLE_NAME = "1"  # Virtual audio cable device for audio duplication
 DUPLICATE_BLOCKSIZE = 256                        # Audio buffer size for duplication (lower = less latency)
 
-
 # --- Global Variables ---
 root = None
 mixer_frame = None          # frame holding the app list (inside tab 1)
@@ -604,6 +603,7 @@ class AudioDuplicator:
 
     def __init__(self):
         self._running = False
+        self._lock = threading.Lock()
         self._thread = None
         self._input_stream = None
         self._output_streams = []
@@ -734,17 +734,19 @@ class AudioDuplicator:
 
     def update_channel_mode(self, device_name, mode):
         """Update the channel mode for a specific device while running."""
-        for i, name in enumerate(self._target_device_names):
-            if name == device_name:
-                self._channel_modes[i] = mode
-                return
+        with self._lock:
+            for i, name in enumerate(self._target_device_names):
+                if name == device_name:
+                    self._channel_modes[i] = mode
+                    return
 
     def set_device_muted(self, device_name, muted):
         """Mute or unmute a specific output device while running."""
-        for i, name in enumerate(self._target_device_names):
-            if name == device_name:
-                self._channel_modes[i] = 'muted' if muted else 'both'
-                return
+        with self._lock:
+            for i, name in enumerate(self._target_device_names):
+                if name == device_name:
+                    self._channel_modes[i] = 'muted' if muted else 'both'
+                    return
 
     def _run(self):
         """Worker thread body — blocking read -> write loop with per-device channel routing."""
@@ -753,8 +755,12 @@ class AudioDuplicator:
                 data, overflowed = self._input_stream.read(DUPLICATE_BLOCKSIZE)
                 if overflowed:
                     print("AudioDuplicator: input overflow")
-                for i, s in enumerate(self._output_streams):
-                    ch_mode = self._channel_modes[i] if i < len(self._channel_modes) else 'both'
+                # Snapshot shared state under lock to avoid race with stop()
+                with self._lock:
+                    streams = list(self._output_streams)
+                    modes = list(self._channel_modes)
+                for i, s in enumerate(streams):
+                    ch_mode = modes[i] if i < len(modes) else 'both'
                     if ch_mode == 'both':
                         s.write(data)
                     elif ch_mode == 'left':
@@ -778,6 +784,7 @@ class AudioDuplicator:
     def stop(self):
         """Stop all streams and the worker thread."""
         self._running = False
+        # Close input stream first to unblock any blocking read in _run()
         if self._input_stream is not None:
             try:
                 self._input_stream.stop()
@@ -785,16 +792,20 @@ class AudioDuplicator:
             except Exception:
                 pass
             self._input_stream = None
-        for s in self._output_streams:
+        # Briefly wait for the worker thread to exit after _running goes False
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        # Now safely close output streams — thread has stopped using them
+        with self._lock:
+            streams_to_close = list(self._output_streams)
+            self._output_streams.clear()
+        for s in streams_to_close:
             try:
                 s.stop()
                 s.close()
             except Exception:
                 pass
-        self._output_streams.clear()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2)
-            self._thread = None
+        self._thread = None
         print("AudioDuplicator: stopped")
 
 
@@ -974,10 +985,15 @@ def add_app_row(app, device_names, app_current_device, max_name_len=15):
 
 
 def poll_new_apps():
+    """Timer-based poll: just schedule next poll and spawn background thread."""
     if not mixer_frame or not mixer_frame.winfo_exists():
         return
     root.after(POLL_INTERVAL_MS, poll_new_apps)
+    threading.Thread(target=_poll_svv_background, daemon=True).start()
 
+
+def _poll_svv_background():
+    """Run SVV subprocess in a background thread — no tkinter calls."""
     try:
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
             tmp_path = tmp.name
@@ -986,7 +1002,20 @@ def poll_new_apps():
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
         os.unlink(tmp_path)
+    except Exception as e:
+        print(f"Error in background SVV poll: {e}")
+        return
 
+    # Schedule GUI update on the main thread
+    root.after(0, _apply_poll_results, data)
+
+
+def _apply_poll_results(data):
+    """Run on main thread — processes SVV data and updates widgets safely."""
+    if not mixer_frame or not mixer_frame.winfo_exists():
+        return
+
+    try:
         # Refresh executable name mapping and full path
         for item in data:
             if item.get("Type") == "Application":
@@ -1031,6 +1060,7 @@ def poll_new_apps():
                         popup_win.destroy()
                     except tk.TclError:
                         pass
+            duplicator_protected.discard(app)
             if app in app_original_device:
                 del app_original_device[app]
             if app in app_full_path:
@@ -1073,7 +1103,7 @@ def poll_new_apps():
         resize_and_position()
 
     except Exception as e:
-        print(f"Error in poll_new_apps: {e}")
+        print(f"Error in _apply_poll_results: {e}")
 
 
 
@@ -1200,8 +1230,11 @@ def open_duplicate_popup(app_name):
         # Define the cleanup function EARLY so it's available for the Close button
         def on_popup_close():
             """Clean up when popup is closed."""
-            if app_name in duplicate_widgets:
-                duplicate_widgets[app_name].pop('popup_window', None)
+            # Stop active duplication before destroying the popup
+            if app_name in duplicator_threads:
+                _stop_duplication(app_name, status_label)
+            # Fully remove all widget references for this app
+            duplicate_widgets.pop(app_name, None)
             try:
                 popup.destroy()
             except tk.TclError:
@@ -1469,8 +1502,12 @@ def _stop_duplication(app_name, status_label):
         if default_id:
             set_app_device(app_name, default_id, "Default Windows Device")
 
-    if status_label and status_label.winfo_exists():
-        status_label.config(text="", foreground='gray')
+    if status_label:
+        try:
+            if status_label.winfo_exists():
+                status_label.config(text="", foreground='gray')
+        except tk.TclError:
+            pass
 
     duplicator_protected.discard(app_name)
 

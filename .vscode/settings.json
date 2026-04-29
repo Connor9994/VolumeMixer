@@ -9,6 +9,6 @@
     "files.exclude": {
         "VolumeMixer.build": true,
         "VolumeMixer.dist": true,
-        "Fixes": true
+        "**/__pycache__": true,
     }
 }

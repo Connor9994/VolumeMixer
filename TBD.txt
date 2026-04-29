@@ -1,10 +1,2 @@
-Re-adjust the window size. Maybe add a small button on the "App Mixer" tab that opens up a separate window instead of it being a 3rd tab?
-That pop-up could have duplication AND the left/right channel options
-
-When you stop splitting an audio, go back to the device it was on before
-
-Open/Close lags with the addition of the 3rd tab, keep those values loaded so opening isn't slow
-
-Pull in the Icon images from the application's and have those displayed on the 1st tab
-
-Have the audio program stay open until the user clicks somewhere else outside of the GUI
+When compiled into an exe, running nightlight_control opens command prompts.
+Hide these if possible. 

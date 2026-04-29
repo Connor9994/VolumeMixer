@@ -51,7 +51,7 @@ Launch the mixer by running the script:
 python VolumeMixer.py
 ```
 
-The window appears at the bottom-right corner of the primary monitor, above the taskbar. If the window does not show, click the system tray icon and choose **Toggle Volume Mixer**.
+The window appears at the bottom-right corner of the primary monitor, above the taskbar.
 
 ### App Mixer tab
 

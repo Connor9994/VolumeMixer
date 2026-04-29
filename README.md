@@ -10,7 +10,7 @@ A compact Windows volume mixer with per-application volume control, device routi
 - Assign each application to a different audio output device via a dropdown menu
 - Master volume sliders for each render device, powered by NirSoft SoundVolumeView
 - System tray icon (loaded from `icon.png`) to show or hide the mixer window
-- Automatic detection of new audio sessions every 500 milliseconds
+- Automatic detection of new audio sessions every 2 seconds
 - Configurable ignored device list (`ignored_devices.txt`) to hide unwanted audio endpoints
 - Configurable ignored application list (`ignored_apps.txt`) to exclude specific programs from the mixer
 - Lightweight, frameless, always-on-top window that positions itself at the bottom-right corner of the work area (avoids the taskbar)
@@ -75,7 +75,7 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - Left-click the tray icon (or right-click and select **Toggle Volume Mixer**) to show or hide the window.
 - Right-click the tray icon and choose **Quit** to exit the application completely.
 
-The mixer continuously polls for new audio sessions. Newly launched applications appear automatically after at most 500 milliseconds.
+The mixer continuously polls for new audio sessions. Newly launched applications appear automatically within 2 seconds.
 
 <img width="320" height="81" alt="image" src="https://github.com/user-attachments/assets/66d99567-1767-4a03-9d1d-ed61a09453d5" />
 
@@ -137,8 +137,7 @@ spotify
 
 ## How It Works
 
-- **App volume** is controlled through the [pycaw](https://github.com/AndreMiras/pycaw) library, which wraps the Windows Core Audio API.
-- **Device volumes** and **per-app device routing** are performed by calling SoundVolumeView with JSON export and command-line switches. A fallback routing attempt uses a different type parameter if the primary call fails.
+- **App volume**, **device volumes**, and **per-app device routing** are all performed by calling SoundVolumeView with `/SetVolume`, `/SetAppDefault`, and JSON export command-line switches. A fallback routing attempt uses a different type parameter if the primary call fails.
 - **App routing** detects the current device assignment for each application from the SoundVolumeView JSON output and pre-selects the matching entry in the dropdown.
 - The tray icon is loaded from `icon.png` via [Pillow](https://github.com/python-pillow/Pillow) and runs in a background thread with [pystray](https://github.com/moses-palmer/pystray).
 - The window uses `tkinter` with `overrideredirect(True)` for a frameless appearance and positions itself via `ctypes` calls to `SystemParametersInfoW`, avoiding the taskbar.

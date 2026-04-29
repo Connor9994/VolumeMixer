@@ -88,7 +88,8 @@ The Misc tab provides controls for the Windows Night Light feature.
 - Current state is read from the system when the tab opens.
 - Changes take effect immediately.
 
-![Screenshot of the Misc tab showing the Night Light section with an enable checkbox and strength slider.]
+<img width="440" height="162" alt="image" src="https://github.com/user-attachments/assets/3b667bdb-299b-4b49-8b09-1ff695a22a7a" />
+<img width="439" height="163" alt="image" src="https://github.com/user-attachments/assets/19f99403-faef-457e-a889-d1f50b788efc" />
 
 ### Audio Duplication
 

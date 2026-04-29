@@ -84,7 +84,7 @@ The mixer continuously polls for new audio sessions. Newly launched applications
 The Misc tab provides controls for the Windows Night Light feature.
 
 - **Enable Night Light** checkbox turns Night Light on or off.
-- **Strength slider** adjusts the color temperature from 0% (warmest, 1200K) to 100% (coolest, 6500K).
+- **Strength slider** adjusts the color temperature from 0% (coolest, 5000K) to 100% (warmest, 1000K).
 - Current state is read from the system when the tab opens.
 - Changes take effect immediately.
 
@@ -96,6 +96,7 @@ Each application row in the App Mixer tab has a gear button that opens a popup w
 
 Requirements:
 - [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) must be installed (free). The virtual cable acts as an intermediate audio endpoint.
+- [Virtual Audio Cable](https://vac.muzychenko.net/en/download.htm) can also be used (not free). 
 
 How it works:
 1. Click the gear button on any application row to open the Audio Routing popup.
@@ -109,7 +110,7 @@ When duplication is active:
 - Audio is captured from the virtual cable and replayed to each selected output device in real time.
 - The original app row is replaced with per-device volume rows in the App Mixer tab, letting you adjust each output independently.
 - Select All and Clear All buttons let you quickly enable or disable all output devices.
-- Uncheck **Enable Duplication** or close the popup to stop. The application is restored to its original output device.
+- Uncheck **Enable Duplication** to stop the duplication. The application is then restored to its original output device.
 
 <img width="417" height="357" alt="image" src="https://github.com/user-attachments/assets/8978115f-b49a-408c-87c1-f552cc07d65b" />
 <img width="439" height="161" alt="image" src="https://github.com/user-attachments/assets/b125b90a-4263-4434-95b6-45ff529e9d46" />
@@ -118,7 +119,7 @@ When duplication is active:
 
 ### `ignored_devices.txt`
 
-Create a plain text file named `ignored_devices.txt` in the same directory. List the exact friendly names of devices you want to hide, one per line. For example:
+List the exact friendly names of devices you want to hide, one per line. For example:
 
 ```
 Speakers (Realtek High Definition Audio)
@@ -127,7 +128,7 @@ CABLE Input (VB-Audio Virtual Cable)
 
 ### `ignored_apps.txt`
 
-Create a plain text file named `ignored_apps.txt` in the same directory. List the application names (without the `.exe` extension) you want to hide, one per line. For example:
+List the application names (without the `.exe` extension) you want to hide, one per line. For example:
 
 ```
 chrome
@@ -147,8 +148,5 @@ spotify
 ## Known Limitations
 
 - Some operations (especially routing applications to specific devices) may require **administrator privileges**. If routing fails, try running the script as an administrator.
-- The mixer identifies applications by their executable name. Applications that stop playing audio may still appear until the program is restarted.
-- The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
-- SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
 - Closing the window sends it to the system tray instead of quitting. Use the **Quit** tray menu option to fully exit.
-- Audio duplication requires any kind of virtual audio driver [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) / [Virtual Audio Cable](https://vac.muzychenko.net/en/download.htm) to be installed. Without it, the duplication feature will not function.
+- Audio duplication **requires** a virtual audio driver [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) / [Virtual Audio Cable](https://vac.muzychenko.net/en/download.htm) to be installed. Without it, the duplication feature will not function.

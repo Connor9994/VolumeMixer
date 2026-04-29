@@ -129,7 +129,8 @@ def refresh_device_data():
             tmp_path = tmp.name
 
         subprocess.run([sound_volume_view, "/sjson", tmp_path],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
 
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
@@ -181,7 +182,8 @@ def set_device_volume(device_name, volume_val):
         subprocess.run(
             [sound_volume_view, "/SetVolume", device_name, str(volume_val)],
             capture_output=True,
-            check=True
+            check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
     except subprocess.CalledProcessError as e:
         print(f"Failed to set volume for {device_name}: {e}")
@@ -192,7 +194,8 @@ def _get_default_render_device_id():
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([sound_volume_view, "/sjson", tmp_path],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
         os.unlink(tmp_path)
@@ -213,7 +216,8 @@ def set_app_device(app_name, device_id, device_display_name=None):
     exe_name = app_exe_name.get(app_name, f"{app_name}.exe")
     cmd = [sound_volume_view, "/SetAppDefault", device_id, "all", exe_name]
     try:
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         print(cmd)
         print(f"Routed {app_name} to device ID {device_id}")
     except subprocess.CalledProcessError as e:
@@ -276,7 +280,7 @@ def _get_app_device_map_svv(svv_data):
         if item.get("Type") != "Application":
             continue
         name = item.get("Name", "")
-        if not name or name.lower() in ('system sounds', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME.lower(), (CURRENT_PROCESS_NAME + '.exe').lower()):
+        if not name or name.lower() in ('System Sounds', 'Volume Mixer', 'microsoft® windows® operating system', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME.lower(), (CURRENT_PROCESS_NAME + '.exe').lower()):
             continue
 
         raw_dev_name = item.get("Device Name", "")
@@ -319,7 +323,8 @@ def _read_svv_volume_by_app_and_device(app_name, device_display_name):
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([sound_volume_view, "/sjson", tmp_path],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
         os.unlink(tmp_path)
@@ -376,10 +381,24 @@ def _set_svv_app_volume(app_name, svv_volume):
     try:
         subprocess.run(
             [sound_volume_view, "/SetVolume", app_name, str(svv_volume)],
-            capture_output=True, check=True
+            capture_output=True, check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
     except subprocess.CalledProcessError as e:
         print(f"SVV SetVolume failed for {app_name}: {e}")
+
+
+def _mute_system_sounds():
+    """Mute System Sounds on all audio devices at startup."""
+    try:
+        subprocess.run(
+            [sound_volume_view, "/Mute", "System Sounds"],
+            capture_output=True, check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        print("System Sounds muted on startup")
+    except Exception as e:
+        print(f"Error muting System Sounds: {e}")
 
 
 def _update_slider_from_session(app_name, slider):
@@ -873,7 +892,8 @@ def refresh_app_list():
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([sound_volume_view, "/sjson", tmp_path],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
         os.unlink(tmp_path)
@@ -898,7 +918,7 @@ def refresh_app_list():
     for item in data:
         if item.get("Type") == "Application":
             name = item.get("Name")
-            if name and name not in ['SystemSounds', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME, CURRENT_PROCESS_NAME + '.exe']:
+            if name and name not in ['System Sounds', 'Volume Mixer', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME, CURRENT_PROCESS_NAME + '.exe']:
                 state = item.get("Device State", "")
                 if state.lower() == "active":
                     app_names.add(name)
@@ -1045,7 +1065,8 @@ def _poll_svv_background():
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([sound_volume_view, "/sjson", tmp_path],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
         os.unlink(tmp_path)
@@ -1076,7 +1097,7 @@ def _apply_poll_results(data):
         for item in data:
             if item.get("Type") == "Application":
                 name = item.get("Name")
-                if name and name not in ['SystemSounds', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME, CURRENT_PROCESS_NAME + '.exe']:
+                if name and name not in ['System Sounds', 'Volume Mixer', 'Microsoft® Windows® Operating System', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME, CURRENT_PROCESS_NAME + '.exe']:
                     state = item.get("Device State", "")
                     if state.lower() == "active":
                         current_apps.add(name)
@@ -1513,7 +1534,8 @@ def _get_duplicate_device_id(app_name):
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([sound_volume_view, "/sjson", tmp_path],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         with open(tmp_path, 'r', encoding='utf-16') as f:
             data = json.load(f)
         os.unlink(tmp_path)
@@ -1832,6 +1854,7 @@ def create_mixer_window():
     refresh_app_list()
     build_device_tab()
     build_misc_tab()
+    _mute_system_sounds()
     root.after(POLL_INTERVAL_MS, poll_new_apps)
     root.after(200, resize_and_position)
 

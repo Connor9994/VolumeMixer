@@ -81,7 +81,8 @@ def _read_hex(key):
     """Read REG_BINARY from registry → hex string or None."""
     try:
         r = subprocess.run(["reg", "query", key, "/v", "Data"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=5,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         if r.returncode != 0:
             return None
         for line in r.stdout.splitlines():
@@ -98,7 +99,8 @@ def _write(key, blob):
     r = subprocess.run(
         ["reg", "add", key, "/v", "Data", "/t", "REG_BINARY",
          "/d", hex_str, "/f"],
-        capture_output=True, text=True, timeout=5)
+        capture_output=True, text=True, timeout=5,
+        creationflags=subprocess.CREATE_NO_WINDOW)
     return r.returncode == 0
 
 
@@ -249,7 +251,8 @@ def dump():
                    ("bluelightreduction.settings", _CUR_SETTINGS)]:
         o = os.path.join(d, f"{nm}.reg")
         r = subprocess.run(["reg", "export", kp, o, "/y"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         print(f"  {'OK' if r.returncode == 0 else 'FAIL'} {o}")
     print(f"\nSaved: {d}")
 

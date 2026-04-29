@@ -111,9 +111,8 @@ When duplication is active:
 - Select All and Clear All buttons let you quickly enable or disable all output devices.
 - Uncheck **Enable Duplication** or close the popup to stop. The application is restored to its original output device.
 
-![Screenshot of the Audio Routing popup showing the duplication toggle, per-device checkboxes, channel dropdowns, and volume sliders.]
-
-![Screenshot of the App Mixer tab with duplication active, showing per-device volume rows for a duplicated application.]
+<img width="417" height="357" alt="image" src="https://github.com/user-attachments/assets/8978115f-b49a-408c-87c1-f552cc07d65b" />
+<img width="439" height="161" alt="image" src="https://github.com/user-attachments/assets/b125b90a-4263-4434-95b6-45ff529e9d46" />
 
 ## Configuration
 

@@ -2,7 +2,7 @@
 
 A compact Windows volume mixer with per-application volume control, device routing, and system tray integration. Provides fast access to application volumes and output device assignments.
 
-![Screenshot of the main Volume Mixer window with the App Mixer tab selected. Shows application volume sliders and device dropdowns.]
+<img width="441" height="162" alt="image" src="https://github.com/user-attachments/assets/b26231d9-b341-4f13-985e-bff59d18a71f" />
 
 ## Features
 
@@ -58,7 +58,7 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - Use the dropdown to route the application to a specific output device. Changes take effect immediately.
 - System processes (`SystemSounds`, `svchost.exe`) and entries listed in `ignored_apps.txt` are hidden from the list.
 
-![Screenshot of the App Mixer tab showing several application entries with sliders and device dropdown menus.]
+<img width="440" height="203" alt="image" src="https://github.com/user-attachments/assets/3726fd64-b9c2-450d-b6f0-b265bbd12ea1" />
 
 ### Device Volumes tab
 
@@ -66,7 +66,7 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - Slide to change the master volume of a device. Updates are sent on release or continuously while dragging, with a 100-millisecond debounce.
 - The "Default Windows Device" entry represents the system default output device.
 
-![Screenshot of the Device Volumes tab showing master volume sliders for each audio output device.]
+<img width="438" height="165" alt="image" src="https://github.com/user-attachments/assets/356b102c-1339-4299-ba31-112d9bef60cf" />
 
 ### Tray icon
 
@@ -75,7 +75,7 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 
 The mixer continuously polls for new audio sessions. Newly launched applications appear automatically after at most 500 milliseconds.
 
-![Screenshot of the system tray icon context menu with "Toggle Volume Mixer" and "Quit" options.]
+<img width="320" height="81" alt="image" src="https://github.com/user-attachments/assets/66d99567-1767-4a03-9d1d-ed61a09453d5" />
 
 ## Configuration
 

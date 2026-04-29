@@ -89,7 +89,6 @@ The Misc tab provides controls for the Windows Night Light feature.
 - Changes take effect immediately.
 
 <img width="440" height="162" alt="image" src="https://github.com/user-attachments/assets/3b667bdb-299b-4b49-8b09-1ff695a22a7a" />
-<img width="439" height="163" alt="image" src="https://github.com/user-attachments/assets/19f99403-faef-457e-a889-d1f50b788efc" />
 
 ### Audio Duplication
 

@@ -1,6 +1,6 @@
 # Volume Mixer
 
-A compact Windows volume mixer with per-application volume control, device routing, and system tray integration. Provides fast access to application volumes and output device assignments.
+A compact Windows volume mixer with per-application volume control, device routing, system tray integration, Windows Night Light control, and real-time audio duplication to multiple output devices.
 
 ![Screenshot of the main Volume Mixer window with the App Mixer tab selected. Shows application volume sliders and device dropdowns.]
 
@@ -15,6 +15,8 @@ A compact Windows volume mixer with per-application volume control, device routi
 - Configurable ignored application list (`ignored_apps.txt`) to exclude specific programs from the mixer
 - Lightweight, frameless, always-on-top window that positions itself at the bottom-right corner of the work area (avoids the taskbar)
 - Debounced device volume updates for smooth dragging
+- Windows Night Light control: toggle on/off and adjust color temperature strength
+- Audio duplication: route an application's audio to multiple output devices simultaneously with per-device volume, channel routing (left, right, or both), and mute
 
 ## Download and Setup
 
@@ -77,6 +79,42 @@ The mixer continuously polls for new audio sessions. Newly launched applications
 
 ![Screenshot of the system tray icon context menu with "Toggle Volume Mixer" and "Quit" options.]
 
+### Misc tab (Night Light)
+
+The Misc tab provides controls for the Windows Night Light feature.
+
+- **Enable Night Light** checkbox turns Night Light on or off.
+- **Strength slider** adjusts the color temperature from 0% (warmest, 1200K) to 100% (coolest, 6500K).
+- Current state is read from the system when the tab opens.
+- Changes take effect immediately.
+
+![Screenshot of the Misc tab showing the Night Light section with an enable checkbox and strength slider.]
+
+### Audio Duplication
+
+Each application row in the App Mixer tab has a gear button that opens a popup window for audio duplication. This feature lets you send an application's audio to multiple output devices at the same time.
+
+Requirements:
+- [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) must be installed (free). The virtual cable acts as an intermediate audio endpoint.
+
+How it works:
+1. Click the gear button on any application row to open the Audio Routing popup.
+2. Select the output devices you want to send audio to.
+3. For each device, choose a channel mode: **both** (stereo), **left** (left channel only), or **right** (right channel only).
+4. Adjust the per-device volume slider for fine balance control.
+5. Check **Enable Duplication** to start.
+
+When duplication is active:
+- The application is routed to the virtual cable.
+- Audio is captured from the virtual cable and replayed to each selected output device in real time.
+- The original app row is replaced with per-device volume rows in the App Mixer tab, letting you adjust each output independently.
+- Select All and Clear All buttons let you quickly enable or disable all output devices.
+- Uncheck **Enable Duplication** or close the popup to stop. The application is restored to its original output device.
+
+![Screenshot of the Audio Routing popup showing the duplication toggle, per-device checkboxes, channel dropdowns, and volume sliders.]
+
+![Screenshot of the App Mixer tab with duplication active, showing per-device volume rows for a duplicated application.]
+
 ## Configuration
 
 ### `ignored_devices.txt`
@@ -105,6 +143,8 @@ spotify
 - **App routing** detects the current device assignment for each application from the SoundVolumeView JSON output and pre-selects the matching entry in the dropdown.
 - The tray icon is loaded from `icon.png` via [Pillow](https://github.com/python-pillow/Pillow) and runs in a background thread with [pystray](https://github.com/moses-palmer/pystray).
 - The window uses `tkinter` with `overrideredirect(True)` for a frameless appearance and positions itself via `ctypes` calls to `SystemParametersInfoW`, avoiding the taskbar.
+- **Night Light** control reads and writes Windows CloudStore registry keys directly via `nightlight_control.py`, manipulating the Blue Light Reduction state and color temperature settings without external dependencies.
+- **Audio duplication** works by routing the target application to a VB-Audio Virtual Cable, then using `sounddevice` (WASAPI loopback) to capture and replay the audio stream to multiple output devices simultaneously with per-device gain and channel routing.
 
 ## Known Limitations
 
@@ -113,3 +153,4 @@ spotify
 - The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
 - SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
 - Closing the window sends it to the system tray instead of quitting. Use the **Quit** tray menu option to fully exit.
+- Audio duplication requires [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) to be installed. Without it, the duplication feature will not function.

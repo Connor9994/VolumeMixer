@@ -1,10 +1,12 @@
 # Volume Mixer
 
-A compact Windows volume mixer with per-application volume control, device routing, and system tray integration. It provides fast access to application volumes and output device assignments without opening the built-in Windows mixer.
+A compact Windows volume mixer with per-application volume control, device routing, and system tray integration. Provides fast access to application volumes and output device assignments.
+
+![Screenshot of the main Volume Mixer window with the App Mixer tab selected. Shows application volume sliders and device dropdowns.]
 
 ## Features
 
-- Per-application volume sliders with an exponential mapping (exponent 2.0) for finer low-volume control
+- Per-application volume sliders with exponential mapping (exponent 2.0) for finer low-volume control
 - Assign each application to a different audio output device via a dropdown menu
 - Master volume sliders for each render device, powered by NirSoft SoundVolumeView
 - System tray icon (loaded from `icon.png`) to show or hide the mixer window
@@ -14,29 +16,36 @@ A compact Windows volume mixer with per-application volume control, device routi
 - Lightweight, frameless, always-on-top window that positions itself at the bottom-right corner of the work area (avoids the taskbar)
 - Debounced device volume updates for smooth dragging
 
-## Requirements
+## Download and Setup
 
-- **Windows** (tested on Windows 10 and 11)
-- **Python 3.6** or newer
-- **NirSoft SoundVolumeView.exe** -- [download](https://www.nirsoft.net/utils/sound_volume_view.html) and place it in the same directory or add it to your system `PATH`
-- Python dependencies listed in `requirements.txt`
-- `icon.png` in the same directory as the script (used for the system tray icon)
+There are two ways to run Volume Mixer.
 
-## Installation
+### Option 1: Compiled executable (no Python required)
 
-1. Clone the repository or download the script (`VolumeMixer.py`).
+Download the `VolumeMixer.dist` directory. Inside it you will find `VolumeMixer.exe` along with all required dependencies bundled together. Launch `VolumeMixer.exe` directly -- no additional setup needed.
+
+The executable is compiled from `VolumeMixer.py` using [Nuitka](https://nuitka.net/) with the following command:
+
+```
+py -m nuitka --standalone --product-name="Volume Mixer" --copyright="Copyright 2026 Homestead Harvest" --file-description="Volume Mixer" --windows-icon-from-ico=icon.ico --file-version="1.0.0.0" --product-version="1.0.0.0" --include-data-file=icon.png=icon.png --enable-plugin=tk-inter --include-data-file=ignored_devices.txt=ignored_devices.txt --include-data-file=ignored_apps.txt=ignored_apps.txt --include-data-file=SoundVolumeView.exe=SoundVolumeView.exe --include-package=pystray --include-package=pycaw --include-package=comtypes --windows-console-mode=disable --follow-imports --assume-yes-for-downloads VolumeMixer.py
+```
+
+### Option 2: Run from source (Python required)
+
+1. Clone the repository or download `VolumeMixer.py`.
 2. Install the required Python packages:
-   ```bash
+
+   ```
    pip install -r requirements.txt
    ```
-3. Place `SoundVolumeView.exe` and `icon.png` next to the script (or ensure `SoundVolumeView.exe` is on the `PATH`).
 
+3. Place `SoundVolumeView.exe` and `icon.png` next to the script (or ensure `SoundVolumeView.exe` is on the `PATH`).
 
 ## Usage
 
 Launch the mixer by running the script:
 
-```bash
+```
 python VolumeMixer.py
 ```
 
@@ -49,11 +58,15 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - Use the dropdown to route the application to a specific output device. Changes take effect immediately.
 - System processes (`SystemSounds`, `svchost.exe`) and entries listed in `ignored_apps.txt` are hidden from the list.
 
+![Screenshot of the App Mixer tab showing several application entries with sliders and device dropdown menus.]
+
 ### Device Volumes tab
 
 - Lists every render device (excluding those in `ignored_devices.txt`).
 - Slide to change the master volume of a device. Updates are sent on release or continuously while dragging, with a 100-millisecond debounce.
 - The "Default Windows Device" entry represents the system default output device.
+
+![Screenshot of the Device Volumes tab showing master volume sliders for each audio output device.]
 
 ### Tray icon
 
@@ -61,6 +74,8 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - Right-click the tray icon and choose **Quit** to exit the application completely.
 
 The mixer continuously polls for new audio sessions. Newly launched applications appear automatically after at most 500 milliseconds.
+
+![Screenshot of the system tray icon context menu with "Toggle Volume Mixer" and "Quit" options.]
 
 ## Configuration
 
@@ -98,7 +113,3 @@ spotify
 - The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
 - SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
 - Closing the window sends it to the system tray instead of quitting. Use the **Quit** tray menu option to fully exit.
-
----
-
-*Uses [SoundVolumeView](https://www.nirsoft.net/utils/sound_volume_view.html) by Nir Sofer, [pycaw](https://github.com/AndreMiras/pycaw), [pystray](https://github.com/moses-palmer/pystray), and [Pillow](https://github.com/python-pillow/Pillow).*

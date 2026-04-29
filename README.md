@@ -151,4 +151,4 @@ spotify
 - The exponential volume exponent (2.0) is fixed in the code. Change the `EXPONENT` variable at the top of the script to modify the curve.
 - SoundVolumeView must be accessible; if it is missing or its output format changes, the script may not populate the device list.
 - Closing the window sends it to the system tray instead of quitting. Use the **Quit** tray menu option to fully exit.
-- Audio duplication requires [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) to be installed. Without it, the duplication feature will not function.
+- Audio duplication requires any kind of virtual audio driver [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) / [Virtual Audio Cable](https://vac.muzychenko.net/en/download.htm) to be installed. Without it, the duplication feature will not function.

@@ -30,8 +30,8 @@ CLIENT_ID = 99
 # ── Date range ───────────────────────────────────────────────────────────
 # Set START_DATE and END_DATE to query a specific range.
 # Leave both as None to fall back to MAX_CHUNKS days back from today.
-START_DATE = "2026-02-01"  # e.g. "2026-03-31"
-END_DATE   = "2026-02-28"  # e.g. "2026-04-30"
+START_DATE = "2026-03-01"  # e.g. "2026-03-31"
+END_DATE   = "2026-03-31"  # e.g. "2026-04-30"
 MAX_CHUNKS = 30    # fallback when START_DATE/END_DATE are None
 
 # ── Disk cache ───────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@
 - Do NOT read, explore, or include files from `VolumeMixer.dist/` or its subdirectories.
 - Do NOT read, explore, or include files from `__pycache__/` directories.
 - Do NOT read, explore, or include files from `Fixes/` directories.
+- Do NOT read, explore, or include files from `Tools/_cache/` directories.
 
 ## Source files only
 Focus only on the following kinds of files when planning or analyzing the project:

@@ -79,6 +79,7 @@ async def record_mynoise(
     duration: float = 30,
     gain: float = 0.5,
     headless: bool = True,
+    preset_name: str = PRESET_NAME,
 ) -> None:
     """Open the mynoise page, capture audio, and save as MP3.
 
@@ -92,6 +93,8 @@ async def record_mynoise(
         Master gain (0.0–1.0).
     headless : bool
         Whether to hide the browser window.
+    preset_name : str
+        The exact text of the preset button to click (e.g. "White", "Pink").
     """
     from playwright.async_api import async_playwright
 

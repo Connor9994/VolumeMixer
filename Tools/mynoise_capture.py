@@ -38,6 +38,10 @@ MYNOISE_URL = (
     "https://mynoise.net/NoiseMachines/whiteNoiseGenerator.php"
 )
 
+# The exact text of the preset button to click on the mynoise page.
+# Common values: "White", "Pink", "Brown", "Speech Blocker", "Grey", "Blue", "Violet"
+PRESET_NAME = "White"
+
 # ── JavaScript injected into the page to capture audio ─────────────────────
 # Taps the existing Web Audio graph *after* masterGain, routes it to a
 # MediaStreamDestination, and pushes chunks back to Python via the

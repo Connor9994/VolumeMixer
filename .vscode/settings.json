@@ -4,8 +4,7 @@
         "VolumeMixer.build": true,
         "VolumeMixer.dist": true,
         "**/__pycache__": true,
-        "Fixes": true,
-        "Tools/_cache": true
+        "Fixes": true
     },
     "files.exclude": {
         "VolumeMixer.build": true,

@@ -40,7 +40,7 @@ MYNOISE_URL = (
 
 # The exact text of the preset button to click on the mynoise page.
 # Common values: "White", "Pink", "Brown", "Speech Blocker", "Grey", "Blue", "Violet"
-PRESET_NAME = "White"
+PRESET_NAME = "Speech Blocker"
 
 # ── JavaScript injected into the page to capture audio ─────────────────────
 # Taps the existing Web Audio graph *after* masterGain, routes it to a
@@ -154,14 +154,14 @@ async def record_mynoise(
         # Let audio buffers finish loading and reach full volume
         await asyncio.sleep(5)
 
-        # Click the "White" preset to switch to white noise
-        print("  Switching to White preset …", file=sys.stderr)
-        white_preset = page.locator('span.actionlink:text-is("White")')
-        if await white_preset.count() > 0:
-            await white_preset.click()
+        # Click the selected preset to switch noise colour
+        print(f"  Switching to {preset_name} preset …", file=sys.stderr)
+        preset_btn = page.locator(f'span.actionlink:text-is("{preset_name}")')
+        if await preset_btn.count() > 0:
+            await preset_btn.click()
             await asyncio.sleep(0.5)  # let the change take effect
         else:
-            print("  ⚠  Could not find 'White' preset button.", file=sys.stderr)
+            print(f"  ⚠  Could not find '{preset_name}' preset button.", file=sys.stderr)
 
         # Apply user-specified master gain
         await page.evaluate(f"masterGain.gain.value = {gain};")
@@ -337,6 +337,14 @@ def main() -> None:
         help="Master gain (0.0–1.0).  Default 0.5.",
     )
     parser.add_argument(
+        "--preset",
+        default=PRESET_NAME,
+        help=(
+            f"Preset button text to click on the mynoise page"
+            f" (default: {PRESET_NAME})."
+        ),
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         default=True,
@@ -361,6 +369,7 @@ def main() -> None:
                 duration=args.duration,
                 gain=args.gain,
                 headless=args.headless,
+                preset_name=args.preset,
             )
         )
     except KeyboardInterrupt:

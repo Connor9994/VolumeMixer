@@ -13,6 +13,8 @@ from PIL import Image, ImageTk
 import sounddevice as sd
 import numpy as np
 import nightlight_control as nl
+import pygame
+import pygame.sndarray
 
 
 # --- Configuration ---
@@ -29,7 +31,8 @@ CURRENT_PROCESS_NAME = os.path.splitext(os.path.basename(sys.executable))[0]
 root = None
 mixer_frame = None          # frame holding the app list (inside tab 1)
 device_tab_frame = None     # frame holding the device list (tab 2)
-misc_tab_frame = None       # frame holding misc features (tab 3)
+sound_machine_tab_frame = None  # frame holding the sound machine (tab 3)
+misc_tab_frame = None       # frame holding misc features (tab 4)
 app_widgets = {}
 sound_volume_view = "SoundVolumeView.exe"
 device_list = []            # list of (display_name, device_id)
@@ -51,6 +54,12 @@ app_original_device = {}    # app_name -> device display name before duplication
 app_icon_cache = {}         # exe_path -> PIL Image (cached app icons)
 app_full_path = {}          # app_name -> full executable path
 
+# Sound Machine state for internal audio duplication (avoids virtual cable loopback)
+sound_machine_playing = False
+sound_machine_duplicator_obj = None   # SoundMachineDuplicator instance when active
+sound_machine_audio_array = None      # int16 numpy array of the original clip (not crossfaded)
+sound_machine_samplerate = 44100      # from pygame.mixer.init(frequency=44100)
+
 
 def load_ignored_devices():                    
     global ignored_device_set
@@ -66,8 +75,8 @@ def load_ignored_devices():
 def load_ignored_apps():
     global ignored_app_set
     ignored_app_set = set()
-    # Always ignore our own process (Python when debugging, VolumeMixer when compiled)
-    ignored_app_set.add(CURRENT_PROCESS_NAME.lower())
+    # Note: CURRENT_PROCESS_NAME is intentionally NOT added here so that
+    # the Sound Machine audio session appears in the App Mixer tab.
     if os.path.exists(IGNORED_APPS):
         with open(IGNORED_APPS, 'r', encoding='utf-8') as f:
             for line in f:
@@ -280,7 +289,7 @@ def _get_app_device_map_svv(svv_data):
         if item.get("Type") != "Application":
             continue
         name = item.get("Name", "")
-        if not name or name.lower() in ('System Sounds', 'Volume Mixer', 'microsoft® windows® operating system', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME.lower(), (CURRENT_PROCESS_NAME + '.exe').lower()):
+        if not name or name.lower() in ('System Sounds', 'microsoft® windows® operating system', 'svchost.exe', 'taskhostw.exe'):
             continue
 
         raw_dev_name = item.get("Device Name", "")
@@ -875,6 +884,266 @@ class AudioDuplicator:
         print("AudioDuplicator: stopped")
 
 
+# --------------------- Sound Machine Duplicator (Internal Buffer) ---------------------
+def _resample_audio(data_f32, src_rate, dst_rate):
+    """Resample float32 audio from src_rate to dst_rate using linear interpolation.
+
+    Args:
+        data_f32: ndarray of shape (samples, channels), dtype float32.
+        src_rate: Source sample rate in Hz.
+        dst_rate: Target sample rate in Hz.
+
+    Returns:
+        Resampled ndarray of shape (samples', channels), dtype float32.
+    """
+    if src_rate == dst_rate or data_f32.shape[0] == 0:
+        return data_f32
+    src_len = data_f32.shape[0]
+    dst_len = max(1, int(round(src_len * dst_rate / src_rate)))
+    src_indices = np.arange(src_len, dtype=np.float64)
+    dst_indices = np.linspace(0.0, src_len - 1.0, dst_len, dtype=np.float64)
+    result = np.zeros((dst_len, data_f32.shape[1]), dtype=np.float32)
+    for ch in range(data_f32.shape[1]):
+        result[:, ch] = np.interp(dst_indices, src_indices, data_f32[:, ch]).astype(np.float32)
+    return result
+
+
+class SoundMachineDuplicator:
+    """Duplicates Sound Machine audio to multiple output devices using the internal
+    pygame audio buffer, avoiding the virtual cable entirely.
+
+    The Sound Machine's audio plays to the default device via pygame as usual.
+    This class additionally plays the same audio data to selected target devices
+    by reading from the stored numpy array and writing to sounddevice OutputStreams.
+
+    Supports per-device left/right channel routing and volume control,
+    matching the AudioDuplicator interface.
+    """
+
+    def __init__(self):
+        self._running = False
+        self._lock = threading.Lock()
+        self._thread = None
+        self._output_streams = []
+        self._stream_samplerates = []  # parallel to _output_streams: device native sample rate
+        self._target_device_names = []
+        self._channel_modes = []
+        self._device_gains = []
+        self._audio_array = None  # int16 numpy array, original clip (looped in _run)
+        self._samplerate = None   # source audio sample rate (from pygame, e.g. 44100)
+
+    def start(self, audio_array, samplerate, target_device_names,
+              channel_modes=None, device_gains=None):
+        """Start duplicating Sound Machine audio to target devices.
+
+        Args:
+            audio_array: int16 numpy array of the original audio clip, shape (samples, channels).
+            samplerate: Sample rate in Hz.
+            target_device_names: List of device display names to play to.
+            channel_modes: List of 'both', 'left', or 'right' — one per target device.
+            device_gains: List of float 0.0-1.0 — gain multiplier per target device.
+
+        Returns True on success, False on failure.
+        """
+        if self._running:
+            return False
+
+        if channel_modes is None:
+            channel_modes = ['both'] * len(target_device_names)
+        if device_gains is None:
+            device_gains = [1.0] * len(target_device_names)
+
+        self._audio_array = audio_array
+        self._samplerate = samplerate
+
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+
+        # Find the WASAPI host API index
+        wasapi_idx = None
+        for i, ha in enumerate(hostapis):
+            if "WASAPI" in ha["name"]:
+                wasapi_idx = i
+                break
+
+        # Find target output device indices (prefer WASAPI, fallback to any)
+        target_indices = []
+        synced_names = []
+        synced_modes = []
+        for idx, target_name in enumerate(target_device_names):
+            found_idx = None
+            if wasapi_idx is not None:
+                for i, d in enumerate(devices):
+                    if (d["hostapi"] == wasapi_idx
+                            and target_name in d["name"]
+                            and d["max_output_channels"] > 0):
+                        found_idx = i
+                        break
+            if found_idx is None:
+                for i, d in enumerate(devices):
+                    if target_name in d["name"] and d["max_output_channels"] > 0:
+                        found_idx = i
+                        break
+            if found_idx is not None:
+                target_indices.append(found_idx)
+                synced_names.append(target_name)
+                ch_mode = channel_modes[idx] if idx < len(channel_modes) else 'both'
+                synced_modes.append(ch_mode)
+            else:
+                print(f"SoundMachineDuplicator: target device '{target_name}' not found")
+
+        if not target_indices:
+            print("SoundMachineDuplicator: no valid target devices")
+            return False
+
+        self._target_device_names = synced_names
+        self._channel_modes = synced_modes
+        synced_gains = []
+        for target_name in synced_names:
+            for orig_idx, orig_name in enumerate(target_device_names):
+                if orig_name == target_name:
+                    gain = device_gains[orig_idx] if orig_idx < len(device_gains) else 1.0
+                    synced_gains.append(gain)
+                    break
+        self._device_gains = synced_gains
+        self._running = True
+
+        # Start output streams (one per target device), using each device's
+        # native default sample rate to avoid "Invalid sample rate" errors.
+        # Audio data will be resampled in _run() if needed.
+        try:
+            for idx in target_indices:
+                dev_samplerate = int(devices[idx]["default_samplerate"])
+                stream = sd.OutputStream(
+                    device=idx,
+                    samplerate=dev_samplerate,
+                    channels=2,
+                    dtype="float32",
+                    blocksize=DUPLICATE_BLOCKSIZE,
+                )
+                stream.start()
+                self._output_streams.append(stream)
+                self._stream_samplerates.append(dev_samplerate)
+        except Exception as e:
+            print(f"SoundMachineDuplicator: failed to create output streams: {e}")
+            self.stop()
+            return False
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        print(f"SoundMachineDuplicator: started, routing to {target_device_names}")
+        return True
+
+    def update_channel_mode(self, device_name, mode):
+        """Update the channel mode for a specific device while running."""
+        with self._lock:
+            for i, name in enumerate(self._target_device_names):
+                if name == device_name:
+                    self._channel_modes[i] = mode
+                    return
+
+    def set_device_muted(self, device_name, muted):
+        """Mute or unmute a specific output device while running."""
+        with self._lock:
+            for i, name in enumerate(self._target_device_names):
+                if name == device_name:
+                    self._channel_modes[i] = 'muted' if muted else 'both'
+                    return
+
+    def set_device_gain(self, device_name, gain):
+        """Set the gain multiplier (0.0-1.0) for a specific output device while running."""
+        with self._lock:
+            for i, name in enumerate(self._target_device_names):
+                if name == device_name:
+                    self._device_gains[i] = max(0.0, min(1.0, gain))
+                    return
+
+    def set_device_volume_percent(self, device_name, percent):
+        """Set volume for a device using 0-100 slider value (exponential curve)."""
+        t = float(percent) / 100.0
+        gain = t ** EXPONENT
+        self.set_device_gain(device_name, gain)
+
+    def get_device_gain(self, device_name):
+        """Get the current gain (0.0-1.0) for a specific output device."""
+        with self._lock:
+            for i, name in enumerate(self._target_device_names):
+                if name == device_name:
+                    return self._device_gains[i]
+        return 1.0
+
+    def _run(self):
+        """Worker thread body — continuously loop through audio buffer, write to outputs."""
+        arr = self._audio_array
+        if arr is None or arr.size == 0:
+            return
+
+        total_samples = arr.shape[0]
+        pos = 0
+
+        while self._running:
+            # Read a chunk from the audio buffer
+            chunk_size = min(DUPLICATE_BLOCKSIZE, total_samples - pos)
+            chunk = arr[pos:pos + chunk_size]
+
+            # Convert int16 to float32 (normalize to [-1.0, 1.0])
+            data_f32 = chunk.astype(np.float32) / 32768.0
+
+            # Snapshot shared state under lock
+            with self._lock:
+                streams = list(self._output_streams)
+                stream_srs = list(self._stream_samplerates)
+                modes = list(self._channel_modes)
+                gains = list(self._device_gains)
+
+            for i, s in enumerate(streams):
+                ch_mode = modes[i] if i < len(modes) else 'both'
+                gain = gains[i] if i < len(gains) else 1.0
+                if ch_mode == 'muted':
+                    continue
+
+                # Resample to device's native sample rate if different from source
+                dev_sr = stream_srs[i] if i < len(stream_srs) else self._samplerate
+                if dev_sr != self._samplerate:
+                    dev_chunk = _resample_audio(data_f32, self._samplerate, dev_sr)
+                else:
+                    dev_chunk = data_f32
+
+                if ch_mode == 'left':
+                    out = np.zeros_like(dev_chunk)
+                    out[:, 0] = dev_chunk[:, 0]
+                    s.write(out * gain)
+                elif ch_mode == 'right':
+                    out = np.zeros_like(dev_chunk)
+                    out[:, 1] = dev_chunk[:, 1]
+                    s.write(out * gain)
+                else:  # 'both'
+                    s.write(dev_chunk * gain)
+
+            pos += chunk_size
+            if pos >= total_samples:
+                pos = 0  # loop back to beginning
+
+    def stop(self):
+        """Stop all streams and the worker thread."""
+        self._running = False
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        with self._lock:
+            streams_to_close = list(self._output_streams)
+            self._output_streams.clear()
+            self._stream_samplerates.clear()
+        for s in streams_to_close:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                pass
+        self._thread = None
+        self._audio_array = None
+        print("SoundMachineDuplicator: stopped")
+
+
 # --------------------- App list UI (Tab 1) ---------------------
 def refresh_app_list():
     if not mixer_frame or not mixer_frame.winfo_exists():
@@ -918,7 +1187,7 @@ def refresh_app_list():
     for item in data:
         if item.get("Type") == "Application":
             name = item.get("Name")
-            if name and name not in ['System Sounds', 'Volume Mixer', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME, CURRENT_PROCESS_NAME + '.exe']:
+            if name and name not in ['System Sounds', 'svchost.exe', 'taskhostw.exe']:
                 state = item.get("Device State", "")
                 if state.lower() == "active":
                     app_names.add(name)
@@ -1097,7 +1366,7 @@ def _apply_poll_results(data):
         for item in data:
             if item.get("Type") == "Application":
                 name = item.get("Name")
-                if name and name not in ['System Sounds', 'Volume Mixer', 'Microsoft® Windows® Operating System', 'svchost.exe', 'taskhostw.exe', CURRENT_PROCESS_NAME, CURRENT_PROCESS_NAME + '.exe']:
+                if name and name not in ['System Sounds', 'Microsoft® Windows® Operating System', 'svchost.exe', 'taskhostw.exe']:
                     state = item.get("Device State", "")
                     if state.lower() == "active":
                         current_apps.add(name)
@@ -1215,7 +1484,178 @@ def build_device_tab():
 
 
 
-# --------------------- Misc / Utilities tab (Tab 3) ---------------------
+# --------------------- Misc / Utilities tab (Tab 4) ---------------------
+SOUNDS_FOLDER = "Sounds"
+SOUND_MACHINE_CROSSFADE_MS = 5000  # crossfade duration (ms) for seamless looping
+SOUND_MACHINE_REPEAT_COUNT = 120  # repeat audio file this many times for ~1 hour of playback (30s * 120 = 60min)
+
+
+def _create_seamless_loop_sound(filepath, fade_ms=SOUND_MACHINE_CROSSFADE_MS, repeat_count=SOUND_MACHINE_REPEAT_COUNT):
+    """Load audio and build a very long buffer by repeating the file N times with crossfades.
+
+    Each repetition is crossfaded into the next, eliminating the click/pop/blip
+    that normally occurs at loop boundaries. The result is played ONCE (not looped),
+    so the transition only occurs every `repeat_count` plays (roughly every hour).
+    """
+    raw = pygame.mixer.Sound(filepath)
+    arr = pygame.sndarray.array(raw)  # numpy array, shape (samples, channels)
+
+    freq = pygame.mixer.get_init()[0]  # samples/second
+    fade_len = int(freq * fade_ms / 1000)
+    if fade_len * 2 >= len(arr):
+        fade_len = max(1, len(arr) // 4)
+
+    # Prepare fade curves (cosine/sine equal-power crossfade — no volume dip at midpoint)
+    if arr.ndim == 2:
+        channels = arr.shape[1]
+        fade_out = np.cos(np.linspace(0.0, np.pi / 2, fade_len)).reshape(-1, 1).repeat(channels, axis=1)
+        fade_in  = np.sin(np.linspace(0.0, np.pi / 2, fade_len)).reshape(-1, 1).repeat(channels, axis=1)
+    else:
+        fade_out = np.cos(np.linspace(0.0, np.pi / 2, fade_len))
+        fade_in  = np.sin(np.linspace(0.0, np.pi / 2, fade_len))
+
+    # Build the long buffer: repeat the clip N times with crossfades at each junction
+    segments = []
+    for i in range(repeat_count):
+        if i == 0:
+            segments.append(arr.astype(arr.dtype))
+        else:
+            # Crossfade previous segment's tail into this repetition's head
+            prev_tail = segments[-1][-fade_len:].astype(np.float32)
+            curr_head = arr[:fade_len].astype(np.float32)
+            xfaded = (prev_tail * fade_out + curr_head * fade_in).astype(arr.dtype)
+            # Replace tail of previous segment with crossfaded version
+            segments[-1] = np.concatenate([segments[-1][:-fade_len], xfaded], axis=0)
+            # Add the rest of this repetition (after the crossfaded head)
+            segments.append(arr[fade_len:].astype(arr.dtype))
+
+    result = np.concatenate(segments, axis=0)
+    return pygame.sndarray.make_sound(result)
+
+
+def build_sound_machine_tab():
+    """Build the Sound Machine tab – pick an audio file from Sounds/ and loop it seamlessly."""
+    global sound_machine_tab_frame
+    for widget in sound_machine_tab_frame.winfo_children():
+        widget.destroy()
+
+    # NOTE: pygame mixer is NOT initialized here — it's only initialized when
+    # the user presses Play, so the app doesn't create an audio session (and
+    # thus doesn't appear in the Volume Mixer) when the sound machine is idle.
+
+    inner = ttk.Frame(sound_machine_tab_frame, padding=10)
+    inner.pack(fill=tk.BOTH, expand=True)
+
+    sm_frame = ttk.LabelFrame(inner, text="Sound Machine", padding=10)
+    sm_frame.pack(fill=tk.X, pady=(0, 10))
+
+    # --- Gather audio files ---
+    audio_files = []
+    if os.path.isdir(SOUNDS_FOLDER):
+        for f in sorted(os.listdir(SOUNDS_FOLDER)):
+            if f.lower().endswith(('.mp3', '.wav', '.ogg', '.flac', '.m4a', '.wma')):
+                audio_files.append(f)
+
+    # --- Dropdown ---
+    row1 = ttk.Frame(sm_frame)
+    row1.pack(fill=tk.X, pady=(0, 8))
+
+    ttk.Label(row1, text="Audio File:").pack(side=tk.LEFT, padx=(0, 8))
+    selected_file = tk.StringVar()
+    dropdown = ttk.Combobox(row1, textvariable=selected_file, values=audio_files,
+                            state="readonly", width=40)
+    dropdown.pack(side=tk.LEFT)
+
+    if audio_files:
+        dropdown.current(0)
+
+    # --- Play / Stop button ---
+    is_playing = [False]        # mutable flag for closure
+    current_loop_sound = [None]  # holds the crossfaded Sound object
+
+    def stop_playback():
+        global sound_machine_playing, sound_machine_audio_array
+        # Stop any active Sound Machine duplication first
+        if sound_machine_duplicator_obj is not None:
+            _stop_sound_machine_duplication()
+        if current_loop_sound[0] is not None:
+            try:
+                current_loop_sound[0].stop()
+            except Exception:
+                pass
+        current_loop_sound[0] = None
+        is_playing[0] = False
+        sound_machine_playing = False
+        sound_machine_audio_array = None
+        play_btn.config(text="▶ Play")
+        # Quit pygame mixer so the audio session disappears from Windows mixer
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
+
+    def play_selected():
+        global sound_machine_audio_array, sound_machine_playing, sound_machine_samplerate
+        file = selected_file.get()
+        if not file:
+            return
+        full_path = os.path.join(SOUNDS_FOLDER, file)
+        if not os.path.exists(full_path):
+            return
+        try:
+            # Initialize pygame mixer only when actually playing
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
+            loop_sound = _create_seamless_loop_sound(full_path)
+            current_loop_sound[0] = loop_sound
+            # Play with native looping — the buffer is ~1 hour long, so the
+            # loop transition (and any remaining click) only occurs once per hour
+            loop_sound.play(loops=-1)
+            is_playing[0] = True
+            sound_machine_playing = True
+            sound_machine_samplerate = pygame.mixer.get_init()[0]
+            # Store the original clip audio data (before crossfading) for internal duplication
+            raw_sound = pygame.mixer.Sound(full_path)
+            sound_machine_audio_array = pygame.sndarray.array(raw_sound)  # int16, (samples, 2)
+            play_btn.config(text="⏹ Stop")
+            # Estimate duration for display
+            try:
+                s = pygame.mixer.Sound(full_path)
+                arr = pygame.sndarray.array(s)
+                freq = pygame.mixer.get_init()[0]
+                dur_s = len(arr) / freq * SOUND_MACHINE_REPEAT_COUNT
+                hours = int(dur_s // 3600)
+                minutes = int((dur_s % 3600) // 60)
+            except Exception:
+                pass
+        except Exception as e:
+            pass
+
+    def toggle_playback():
+        if is_playing[0]:
+            stop_playback()
+        else:
+            play_selected()
+
+    # Also stop if the user picks a new file while playing
+    def on_file_select(*args):
+        if is_playing[0]:
+            stop_playback()
+
+    selected_file.trace_add("write", on_file_select)
+
+    play_btn = ttk.Button(row1, text="▶ Play", command=toggle_playback)
+    play_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+    # --- Cleanup on close ---
+    def on_sm_tab_destroy(*args):
+        if is_playing[0]:
+            stop_playback()
+
+    sound_machine_tab_frame.bind("<Destroy>", on_sm_tab_destroy)
+
+    resize_and_position()
+
+
 def build_misc_tab():
     """Build the Misc/Utilities tab – night light controls using nightlight_control."""
     for widget in misc_tab_frame.winfo_children():
@@ -1323,9 +1763,16 @@ def open_duplicate_popup(app_name):
         ttk.Label(main_frame, text=f"{clean_name} — Duplication & Channel Routing",
                   font=('', 10, 'bold')).pack(anchor='w')
 
+        # Determine if this is the Sound Machine app (internal duplication, no virtual cable)
+        is_sm = _is_sound_machine_app(app_name)
+        if is_sm:
+            desc_text = (f"Sound Machine audio will be duplicated internally to selected devices.\n"
+                         f"No virtual cable needed — pygame audio is routed directly.")
+        else:
+            desc_text = (f"Route audio to multiple devices and choose left/right channel per device.\n"
+                         f"Uses virtual cable \"{VIRTUAL_CABLE_NAME}\" — must be installed.")
         ttk.Label(main_frame,
-                  text=f"Route audio to multiple devices and choose left/right channel per device.\n"
-                        f"Uses virtual cable \"{VIRTUAL_CABLE_NAME}\" — must be installed.",
+                  text=desc_text,
                   wraplength=360, foreground='gray').pack(anchor='w', pady=(0, 10))
 
         # Duplicate toggle
@@ -1468,24 +1915,31 @@ def open_duplicate_popup(app_name):
 
         # --- Toggle Handler ---
         def on_toggle(*_):
-            if dup_var.get():
-                selected_devices = [d for d, v in device_vars.items() if v.get()]
-                if not selected_devices:
-                    selected_devices = list(device_vars.keys())
-                    for v in device_vars.values():
-                        v.set(True)
+            try:
+                if dup_var.get():
+                    selected_devices = [d for d, v in device_vars.items() if v.get()]
+                    if not selected_devices:
+                        selected_devices = list(device_vars.keys())
+                        for v in device_vars.values():
+                            v.set(True)
 
-                channel_modes = [channel_vars[d].get() for d in selected_devices]
+                    channel_modes = [channel_vars[d].get() for d in selected_devices]
 
-                duplicate_widgets.setdefault(app_name, {})['channel_modes'] = {
-                    d: channel_vars[d].get() for d in device_vars
-                }
+                    duplicate_widgets.setdefault(app_name, {})['channel_modes'] = {
+                        d: channel_vars[d].get() for d in device_vars
+                    }
 
-                status_label.config(text="Starting...", foreground='gray')
-                _start_duplication(app_name, selected_devices, channel_modes, status_label)
-            else:
-                status_label.config(text="Stopping...", foreground='gray')
-                _stop_duplication(app_name, status_label)
+                    status_label.config(text="Starting...", foreground='gray')
+                    _start_duplication(app_name, selected_devices, channel_modes, status_label)
+                else:
+                    status_label.config(text="Stopping...", foreground='gray')
+                    _stop_duplication(app_name, status_label)
+            except Exception as e:
+                print(f"Error in duplication toggle for {app_name}: {e}")
+                try:
+                    status_label.config(text=f"Error: {e}", foreground='red')
+                except Exception:
+                    pass
 
         dup_var.trace_add('write', on_toggle)
 
@@ -1546,8 +2000,28 @@ def _get_duplicate_device_id(app_name):
         print(f"Error finding virtual cable device: {e}")
     return None
 
+def _is_sound_machine_app(app_name):
+    """Check if the given app name corresponds to our own process (Sound Machine).
+    
+    The Sound Machine uses pygame which creates an audio session under the process
+    name — either "python" (when run as script), "VolumeMixer" (compiled), or
+    "Volume Mixer" (SVV friendly name). Returns True only if the Sound Machine
+    is currently playing audio.
+    """
+    if not sound_machine_playing or sound_machine_audio_array is None:
+        return False
+    clean_name = app_name.lower().replace('.exe', '').strip()
+    return (clean_name == CURRENT_PROCESS_NAME.lower()
+            or clean_name == CURRENT_PROCESS_NAME.lower().replace(' ', '')
+            or CURRENT_PROCESS_NAME.lower() in clean_name)
+
+
 def _start_duplication(app_name, target_devices, channel_modes, status_label):
     """Route app to virtual cable and start audio capture/playback to target devices.
+    
+    For the Sound Machine app (python/VolumeMixer), uses internal buffer duplication
+    instead of the virtual cable loopback — the audio plays to the default device
+    via pygame naturally, and additional output streams are created for target devices.
     
     channel_modes: list of 'both', 'left', or 'right' — one per target device.
     """
@@ -1559,6 +2033,45 @@ def _start_duplication(app_name, target_devices, channel_modes, status_label):
         # Read the app's current volume on its original device (before routing away)
         original_volume = _read_svv_volume_by_app_and_device(app_name, original_device)
 
+        # Check if this is the Sound Machine app — use internal duplication
+        is_sm = _is_sound_machine_app(app_name)
+
+        if is_sm:
+            # Sound Machine: use internal buffer duplicator, NO virtual cable routing
+            # pygame continues playing to the default device; we add extra output streams
+            dup = SoundMachineDuplicator()
+            initial_gains = [1.0] * len(target_devices)
+            success = dup.start(
+                sound_machine_audio_array,
+                sound_machine_samplerate,
+                target_devices,
+                channel_modes,
+                device_gains=initial_gains
+            )
+            if success:
+                global sound_machine_duplicator_obj
+                sound_machine_duplicator_obj = dup
+                duplicator_threads[app_name] = dup
+                duplicator_targets[app_name] = list(target_devices)
+                target_details = []
+                for i, dev in enumerate(target_devices):
+                    mode = channel_modes[i] if i < len(channel_modes) else 'both'
+                    if mode == 'both':
+                        target_details.append(dev)
+                    else:
+                        target_details.append(f"{dev} ({mode})")
+                status_label.config(
+                    text=f"Sound Machine → {', '.join(target_details)}",
+                    foreground='green'
+                )
+                _hide_original_app_row(app_name)
+                _add_duplicate_rows(app_name, target_devices)
+            else:
+                status_label.config(
+                    text="Failed to start internal duplication", foreground='red'
+                )
+            return
+        # --- Normal (non-Sound Machine) duplication: virtual cable approach ---
         # Route the app to the virtual cable
         cable_id = _get_duplicate_device_id(app_name)
         if not cable_id:
@@ -1607,173 +2120,231 @@ def _start_duplication(app_name, target_devices, channel_modes, status_label):
         except Exception:
             pass
 
+def _stop_sound_machine_duplication():
+    """Stop Sound Machine duplication without restoring device (no virtual cable was used)."""
+    try:
+        global sound_machine_duplicator_obj
+        # Find the app name associated with the Sound Machine duplicator
+        sm_app_name = None
+        for aname, dup in list(duplicator_threads.items()):
+            if dup is sound_machine_duplicator_obj:
+                sm_app_name = aname
+                break
+
+        if sm_app_name:
+            _remove_duplicate_rows(sm_app_name)
+            _show_original_app_row(sm_app_name)
+            duplicator_threads.pop(sm_app_name, None)
+            duplicator_targets.pop(sm_app_name, None)
+            app_original_device.pop(sm_app_name, None)
+            duplicator_protected.discard(sm_app_name)
+
+        if sound_machine_duplicator_obj is not None:
+            sound_machine_duplicator_obj.stop()
+            sound_machine_duplicator_obj = None
+    except Exception as e:
+        print(f"Error in _stop_sound_machine_duplication: {e}")
+
+
 def _stop_duplication(app_name, status_label):
-    """Stop audio duplication and restore app to original device."""
+    """Stop audio duplication and restore app to original device.
 
-    # Remove per-device duplicate rows and restore the original app row
-    _remove_duplicate_rows(app_name)
-    _show_original_app_row(app_name)
+    For the Sound Machine app, the duplicator is stopped without restoring
+    any SVV device routing (none was done).
+    """
+    try:
+        # Check if this is the Sound Machine app
+        if _is_sound_machine_app(app_name):
+            _stop_sound_machine_duplication()
+            if status_label:
+                try:
+                    if status_label.winfo_exists():
+                        status_label.config(text="", foreground='gray')
+                except tk.TclError:
+                    pass
+            return
 
-    # Stop the audio duplicator
-    dup = duplicator_threads.pop(app_name, None)
-    duplicator_targets.pop(app_name, None)
-    if dup:
-        dup.stop()
+        # Normal (non-Sound Machine) duplication: remove rows and restore device
+        _remove_duplicate_rows(app_name)
+        _show_original_app_row(app_name)
 
-    # Restore the app to the device it was on before duplication
-    original_device = app_original_device.pop(app_name, None)
-    if original_device and original_device in device_name_to_id:
-        restore_id = device_name_to_id[original_device]
-        set_app_device(app_name, restore_id, original_device)
-    else:
-        # Fallback to default Windows device
-        default_id = device_name_to_id.get("Default Windows Device")
-        if not default_id:
-            default_id = _get_default_render_device_id()
-        if default_id:
-            set_app_device(app_name, default_id, "Default Windows Device")
+        # Stop the audio duplicator
+        dup = duplicator_threads.pop(app_name, None)
+        duplicator_targets.pop(app_name, None)
+        if dup:
+            dup.stop()
 
-    if status_label:
-        try:
-            if status_label.winfo_exists():
-                status_label.config(text="", foreground='gray')
-        except tk.TclError:
-            pass
+        # Restore the app to the device it was on before duplication
+        original_device = app_original_device.pop(app_name, None)
+        if original_device and original_device in device_name_to_id:
+            restore_id = device_name_to_id[original_device]
+            set_app_device(app_name, restore_id, original_device)
+        else:
+            # Fallback to default Windows device
+            default_id = device_name_to_id.get("Default Windows Device")
+            if not default_id:
+                default_id = _get_default_render_device_id()
+            if default_id:
+                set_app_device(app_name, default_id, "Default Windows Device")
 
-    duplicator_protected.discard(app_name)
+        if status_label:
+            try:
+                if status_label.winfo_exists():
+                    status_label.config(text="", foreground='gray')
+            except tk.TclError:
+                pass
+
+        duplicator_protected.discard(app_name)
+    except Exception as e:
+        print(f"Error in _stop_duplication for {app_name}: {e}")
 
 
 # --------------------- Per-device duplicate rows in App Mixer ---------------------
 def _hide_original_app_row(app_name):
     """Hide the original app's row in the App Mixer while duplication is active."""
-    if app_name not in app_widgets:
-        return
-    frame = app_widgets[app_name].get('frame')
-    if not frame or not frame.winfo_exists():
-        return
-    # Remember pack state for restoration
-    duplicator_rows.setdefault(app_name, {})['_original_pack_info'] = frame.pack_info()
-    frame.pack_forget()
+    try:
+        if app_name not in app_widgets:
+            return
+        frame = app_widgets[app_name].get('frame')
+        if not frame or not frame.winfo_exists():
+            return
+        # Remember pack state for restoration
+        duplicator_rows.setdefault(app_name, {})['_original_pack_info'] = frame.pack_info()
+        frame.pack_forget()
+    except Exception as e:
+        print(f"Error in _hide_original_app_row for {app_name}: {e}")
 
 
 def _show_original_app_row(app_name):
     """Restore the original app's row after duplication stops."""
-    if app_name not in app_widgets:
-        return
-    frame = app_widgets[app_name].get('frame')
-    if not frame or not frame.winfo_exists():
-        return
-    pack_info = duplicator_rows.get(app_name, {}).get('_original_pack_info', {})
-    if pack_info:
-        try:
-            frame.pack(pack_info)
-        except Exception:
+    try:
+        if app_name not in app_widgets:
+            return
+        frame = app_widgets[app_name].get('frame')
+        if not frame or not frame.winfo_exists():
+            return
+        pack_info = duplicator_rows.get(app_name, {}).get('_original_pack_info', {})
+        if pack_info:
+            try:
+                frame.pack(pack_info)
+            except Exception:
+                frame.pack(fill=tk.X, padx=10, pady=5)
+        else:
             frame.pack(fill=tk.X, padx=10, pady=5)
-    else:
-        frame.pack(fill=tk.X, padx=10, pady=5)
+    except Exception as e:
+        print(f"Error in _show_original_app_row for {app_name}: {e}")
 
 
 def _add_duplicate_rows(app_name, target_devices):
     """Create per-device volume rows in the App Mixer for each duplicated output."""
-    if app_name not in duplicator_rows:
-        duplicator_rows[app_name] = {}
-    if app_name not in duplicator_slider_values:
-        duplicator_slider_values[app_name] = {}
+    try:
+        if app_name not in duplicator_rows:
+            duplicator_rows[app_name] = {}
+        if app_name not in duplicator_slider_values:
+            duplicator_slider_values[app_name] = {}
 
-    clean_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
+        clean_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
 
-    # Determine max_name_len from existing widgets for consistent width
-    all_names = list(app_widgets.keys())
-    clean_names = [a[:-4] if a.lower().endswith('.exe') else a for a in all_names]
-    max_name_len = max((len(name) for name in clean_names), default=15)
+        # Determine max_name_len from existing widgets for consistent width
+        all_names = list(app_widgets.keys())
+        clean_names = [a[:-4] if a.lower().endswith('.exe') else a for a in all_names]
+        max_name_len = max((len(name) for name in clean_names), default=15)
 
-    for dev_name in target_devices:
-        row_frame = ttk.Frame(mixer_frame)
-        row_frame.pack(fill=tk.X, padx=10, pady=2)
+        for dev_name in target_devices:
+            row_frame = ttk.Frame(mixer_frame)
+            row_frame.pack(fill=tk.X, padx=10, pady=2)
 
-        # Device indicator label (like an icon placeholder)
-        indicator = ttk.Label(row_frame, text="🔊", width=2)
-        indicator.pack(side=tk.LEFT, padx=(0, 3))
+            # Device indicator label (like an icon placeholder)
+            indicator = ttk.Label(row_frame, text="🔊", width=2)
+            indicator.pack(side=tk.LEFT, padx=(0, 3))
 
-        # Label: "AppName → DeviceName"
-        row_label_text = f"{clean_name} → {dev_name}"
-        row_label = ttk.Label(row_frame, text=row_label_text, width=max_name_len + len(dev_name) + 3, anchor='w')
-        row_label.pack(side=tk.LEFT, padx=(0, 5))
+            # Label: "AppName → DeviceName"
+            row_label_text = f"{clean_name} → {dev_name}"
+            row_label = ttk.Label(row_frame, text=row_label_text, width=max_name_len + len(dev_name) + 3, anchor='w')
+            row_label.pack(side=tk.LEFT, padx=(0, 5))
 
-        # Volume slider
-        slider = ttk.Scale(row_frame, from_=0, to=100, orient=tk.HORIZONTAL)
-        slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        slider._debounce_after_id = None
+            # Volume slider
+            slider = ttk.Scale(row_frame, from_=0, to=100, orient=tk.HORIZONTAL)
+            slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+            slider._debounce_after_id = None
 
-        # Restore saved slider position, or default to 100 (full volume)
-        saved_val = duplicator_slider_values[app_name].get(dev_name, 100.0)
-        slider.set(saved_val)
+            # Restore saved slider position, or default to 100 (full volume)
+            saved_val = duplicator_slider_values[app_name].get(dev_name, 100.0)
+            slider.set(saved_val)
 
-        # Debounced volume update via AudioDuplicator
-        def make_dup_update_live(a, d):
-            def update_live(event, s=slider):
-                if s._debounce_after_id is not None:
-                    s.after_cancel(s._debounce_after_id)
-                s._debounce_after_id = s.after(100, lambda: (
-                    _set_duplicate_device_volume(a, d, s.get()),
-                    setattr(s, '_debounce_after_id', None)
-                ))
-            return update_live
-
-        slider.bind("<B1-Motion>", make_dup_update_live(app_name, dev_name))
-        slider.bind("<ButtonRelease-1>",
-                    lambda e, a=app_name, d=dev_name, s=slider: (
-                        s.after_cancel(s._debounce_after_id) if s._debounce_after_id else None,
-                        _set_duplicate_device_volume(a, d, s.get())
+            # Debounced volume update via AudioDuplicator
+            def make_dup_update_live(a, d):
+                def update_live(event, s=slider):
+                    if s._debounce_after_id is not None:
+                        s.after_cancel(s._debounce_after_id)
+                    s._debounce_after_id = s.after(100, lambda: (
+                        _set_duplicate_device_volume(a, d, s.get()),
+                        setattr(s, '_debounce_after_id', None)
                     ))
+                return update_live
 
-        # Gear button — opens the existing duplication popup
-        dup_btn = ttk.Button(row_frame, text="⚙", width=3,
-                             command=lambda a=app_name: open_duplicate_popup(a))
-        dup_btn.pack(side=tk.RIGHT, padx=(2, 0))
+            slider.bind("<B1-Motion>", make_dup_update_live(app_name, dev_name))
+            slider.bind("<ButtonRelease-1>",
+                        lambda e, a=app_name, d=dev_name, s=slider: (
+                            s.after_cancel(s._debounce_after_id) if s._debounce_after_id else None,
+                            _set_duplicate_device_volume(a, d, s.get())
+                        ))
 
-        duplicator_rows[app_name][dev_name] = {
-            'frame': row_frame,
-            'slider': slider,
-            'label': row_label,
-        }
+            # Gear button — opens the existing duplication popup
+            dup_btn = ttk.Button(row_frame, text="⚙", width=3,
+                                 command=lambda a=app_name: open_duplicate_popup(a))
+            dup_btn.pack(side=tk.RIGHT, padx=(2, 0))
 
-    resize_and_position()
+            duplicator_rows[app_name][dev_name] = {
+                'frame': row_frame,
+                'slider': slider,
+                'label': row_label,
+            }
+
+        resize_and_position()
+    except Exception as e:
+        print(f"Error in _add_duplicate_rows for {app_name}: {e}")
 
 
 def _set_duplicate_device_volume(app_name, device_name, slider_value):
     """Set the volume for a single duplicated output device via AudioDuplicator gain."""
-    dup = duplicator_threads.get(app_name)
-    if dup:
-        dup.set_device_volume_percent(device_name, slider_value)
-    # Save the value for restoration when popup reopens
-    duplicator_slider_values.setdefault(app_name, {})[device_name] = slider_value
-    # Sync back to the popup slider if it's open
-    popup_sliders = duplicate_widgets.get(app_name, {}).get('popup_vol_sliders', {})
-    popup_slider = popup_sliders.get(device_name)
-    if popup_slider and popup_slider.winfo_exists():
-        try:
-            current = popup_slider.get()
-            if abs(current - slider_value) > 0.5:
-                popup_slider.set(slider_value)
-        except (tk.TclError, ValueError):
-            pass
+    try:
+        dup = duplicator_threads.get(app_name)
+        if dup:
+            dup.set_device_volume_percent(device_name, slider_value)
+        # Save the value for restoration when popup reopens
+        duplicator_slider_values.setdefault(app_name, {})[device_name] = slider_value
+        # Sync back to the popup slider if it's open
+        popup_sliders = duplicate_widgets.get(app_name, {}).get('popup_vol_sliders', {})
+        popup_slider = popup_sliders.get(device_name)
+        if popup_slider and popup_slider.winfo_exists():
+            try:
+                current = popup_slider.get()
+                if abs(current - slider_value) > 0.5:
+                    popup_slider.set(slider_value)
+            except (tk.TclError, ValueError):
+                pass
+    except Exception as e:
+        print(f"Error in _set_duplicate_device_volume for {app_name}/{device_name}: {e}")
 
 
 def _remove_duplicate_rows(app_name):
     """Destroy all per-device duplicate rows for an app."""
-    if app_name not in duplicator_rows:
-        return
-    for dev_name, widgets in list(duplicator_rows[app_name].items()):
-        if dev_name.startswith('_'):
-            continue  # skip internal keys like _original_pack_info
-        frame = widgets.get('frame')
-        if frame and frame.winfo_exists():
-            try:
-                frame.destroy()
-            except tk.TclError:
-                pass
-    duplicator_rows.pop(app_name, None)
+    try:
+        if app_name not in duplicator_rows:
+            return
+        for dev_name, widgets in list(duplicator_rows[app_name].items()):
+            if dev_name.startswith('_'):
+                continue  # skip internal keys like _original_pack_info
+            frame = widgets.get('frame')
+            if frame and frame.winfo_exists():
+                try:
+                    frame.destroy()
+                except tk.TclError:
+                    pass
+        duplicator_rows.pop(app_name, None)
+    except Exception as e:
+        print(f"Error in _remove_duplicate_rows for {app_name}: {e}")
 
 
 # --------------------- Tab change handling ---------------------
@@ -1787,25 +2358,41 @@ def create_tray_image():
 
 
 def toggle_gui(icon, item):
+    # All tkinter calls must happen on the main thread via root.after
+    # Use a temporary Tk() if root doesn't exist yet to schedule the task
+    if root:
+        root.after(0, _do_toggle_gui)
+    else:
+        create_mixer_window()  # creates root, which sets up mainloop
+
+
+def _do_toggle_gui():
+    """Toggle GUI visibility — runs on the main thread via root.after()."""
+    global root
     if root and root.winfo_exists():
         state = root.state()
         if state == 'withdrawn':
-            root.after(0, lambda: (
-                position_at_bottom_right(root),
-                root.deiconify(),
-                root.lift(),
-                root.focus_force()
-            ))
+            position_at_bottom_right(root)
+            root.deiconify()
+            root.lift()
+            root.focus_force()
         else:
-            root.after(0, root.withdraw)
+            root.withdraw()
     else:
-        root.after(0, create_mixer_window)
+        create_mixer_window()
 
 
 def quit_app_from_tray(icon, item):
     icon.stop()
+    if root:
+        root.after(0, _do_quit_app)
+
+
+def _do_quit_app():
+    """Quit the app — runs on the main thread via root.after()."""
+    global root
     if root and root.winfo_exists():
-        root.after(0, root.destroy)
+        root.destroy()
 
 
 def run_tray_icon():
@@ -1827,7 +2414,7 @@ def run_tray_icon():
 
 # --------------------- Main GUI ---------------------
 def create_mixer_window():
-    global root, mixer_frame, device_tab_frame, misc_tab_frame
+    global root, mixer_frame, device_tab_frame, sound_machine_tab_frame, misc_tab_frame
     root = tk.Tk()
     root.title("Volume Mixer")
     root.minsize(0, 0)
@@ -1844,6 +2431,9 @@ def create_mixer_window():
     device_tab_frame = ttk.Frame(notebook)
     notebook.add(device_tab_frame, text="Device Volumes")
 
+    sound_machine_tab_frame = ttk.Frame(notebook)
+    notebook.add(sound_machine_tab_frame, text="Sound Machine")
+
     misc_tab_frame = ttk.Frame(notebook)
     notebook.add(misc_tab_frame, text="Misc")
 
@@ -1853,8 +2443,9 @@ def create_mixer_window():
     load_ignored_apps()
     refresh_app_list()
     build_device_tab()
+    build_sound_machine_tab()
     build_misc_tab()
-    _mute_system_sounds()
+    # _mute_system_sounds()  # Disabled — no longer mutes System Sounds on startup
     root.after(POLL_INTERVAL_MS, poll_new_apps)
     root.after(200, resize_and_position)
 

@@ -1,6 +1,7 @@
 comtypes==1.4.16
 Pillow==12.2.0
 pycaw==20251023
+pygame==2.6.1
 pystray==0.19.5
 sounddevice==0.5.5
 numpy==2.2.4

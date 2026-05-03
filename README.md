@@ -1,5 +1,7 @@
 # Volume Mixer
 
+![GitHub stars](https://img.shields.io/github/stars/Connor9994/VolumeMixer?style=social) ![GitHub forks](https://img.shields.io/github/forks/Connor9994/VolumeMixer?style=social) ![GitHub issues](https://img.shields.io/github/issues/Connor9994/VolumeMixer) 
+
 A compact Windows volume mixer with per-application volume control, device routing, system tray integration, a Sound Machine for ambient audio playback, Windows Night Light control, and real-time audio duplication to multiple output devices.
 
 <img width="464" height="203" alt="image" src="https://github.com/user-attachments/assets/86a146be-c455-4bc1-9c1d-c6f773bb996a" />

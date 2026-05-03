@@ -2,6 +2,8 @@
 
 A compact Windows volume mixer with per-application volume control, device routing, system tray integration, a Sound Machine for ambient audio playback, Windows Night Light control, and real-time audio duplication to multiple output devices.
 
+<img width="464" height="203" alt="image" src="https://github.com/user-attachments/assets/86a146be-c455-4bc1-9c1d-c6f773bb996a" />
+
 ## Features
 
 - Per-application volume sliders with exponential mapping (exponent 2.0) for finer low-volume control.
@@ -63,11 +65,15 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - System processes (`SystemSounds`, `svchost.exe`, `taskhostw.exe`) and entries listed in `ignored_apps.txt` are hidden from the list.
 - Each row has a gear button that opens the Audio Routing popup for duplication.
 
+<img width="464" height="163" alt="image" src="https://github.com/user-attachments/assets/a6f41ce3-3e2f-43c5-83eb-358991fa93b8" />
+
 ### Device Volumes tab
 
 - Lists every render device (excluding those in `ignored_devices.txt`).
 - Slide to change the master volume of a device. Updates are sent on release or continuously while dragging, with a 100-millisecond debounce.
 - The "Default Windows Device" entry represents the system default output device.
+
+<img width="464" height="162" alt="image" src="https://github.com/user-attachments/assets/8c70a421-06f4-4327-9d03-8caba8227cab" />
 
 ### Sound Machine tab
 
@@ -78,6 +84,8 @@ The window appears at the bottom-right corner of the primary monitor, above the 
 - The Sound Machine uses pygame for audio output. The mixer is initialized only when playback starts, so no audio session appears while idle.
 - Sound Machine audio can be duplicated to multiple output devices using the gear button, just like any other application.
 
+<img width="464" height="163" alt="image" src="https://github.com/user-attachments/assets/3da8cb57-f921-4569-a749-835f949ef9ca" />
+
 ### Misc tab (Night Light)
 
 The Misc tab provides controls for the Windows Night Light feature.
@@ -87,12 +95,16 @@ The Misc tab provides controls for the Windows Night Light feature.
 - Current state is read from the system when the tab opens.
 - Changes take effect immediately.
 
+<img width="464" height="162" alt="image" src="https://github.com/user-attachments/assets/8a820cb0-6946-466b-ba9e-1f300f3cdd59" />
+
 ### Tray icon
 
 - Left-click the tray icon (or right-click and select **Toggle Volume Mixer**) to show or hide the window.
 - Right-click the tray icon and choose **Quit** to exit the application completely.
 
 The mixer continuously polls for new audio sessions. Newly launched applications appear automatically within 2 seconds.
+
+<img width="315" height="74" alt="image" src="https://github.com/user-attachments/assets/df9bea3b-400b-42de-95d0-6d943ca73c2c" />
 
 ### Audio Duplication
 
@@ -103,6 +115,8 @@ Requirements for standard application duplication:
 - [Virtual Audio Cable](https://vac.muzychenko.net/en/download.htm) can also be used (not free).
 
 The Sound Machine does not require a virtual cable for duplication. Its audio is duplicated internally using the pygame audio buffer, with no loopback or cable needed.
+
+<img width="419" height="356" alt="image" src="https://github.com/user-attachments/assets/16533119-e227-4380-89b4-af1025dd56cb" />
 
 How it works:
 1. Click the gear button on any application row to open the Audio Routing popup.
@@ -117,6 +131,8 @@ When duplication is active:
 - The original app row is replaced with per-device volume rows in the App Mixer tab, letting you adjust each output independently.
 - Select All and Clear All buttons let you quickly enable or disable all output devices.
 - Uncheck **Enable Duplication** to stop. The application is restored to its original output device.
+
+<img width="464" height="162" alt="image" src="https://github.com/user-attachments/assets/5291d82d-4e15-4339-b51e-3c6eaf87cc72" />
 
 ## Configuration
 
@@ -166,5 +182,4 @@ This project is released under [The Unlicense](LICENSE). It is free and unencumb
 ## Known Limitations
 
 - Some operations (especially routing applications to specific devices) may require **administrator privileges**. If routing fails, try running the script as an administrator.
-- Closing the window sends it to the system tray instead of quitting. Use the **Quit** tray menu option to fully exit.
 - Audio duplication for standard applications **requires** a virtual audio driver [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) / [Virtual Audio Cable](https://vac.muzychenko.net/en/download.htm) to be installed. Without it, the duplication feature will not function for non-Sound Machine apps.

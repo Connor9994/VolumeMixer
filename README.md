@@ -44,8 +44,6 @@ py -m nuitka --standalone --product-name="Volume Mixer" --copyright="Copyright 2
    pip install -r requirements.txt
    ```
 
-3. Place `SoundVolumeView.exe` and `icon.png` next to the script (or ensure `SoundVolumeView.exe` is on the `PATH`).
-
 ## Usage
 
 Launch the mixer by running the script:
@@ -116,14 +114,14 @@ Requirements for standard application duplication:
 
 The Sound Machine does not require a virtual cable for duplication. Its audio is duplicated internally using the pygame audio buffer, with no loopback or cable needed.
 
-<img width="419" height="356" alt="image" src="https://github.com/user-attachments/assets/16533119-e227-4380-89b4-af1025dd56cb" />
-
 How it works:
 1. Click the gear button on any application row to open the Audio Routing popup.
 2. Select the output devices you want to send audio to.
 3. For each device, choose a channel mode: **both** (stereo), **left** (left channel only), or **right** (right channel only).
 4. Adjust the per-device volume slider for fine balance control.
 5. Check **Enable Duplication** to start.
+
+<img width="419" height="356" alt="image" src="https://github.com/user-attachments/assets/16533119-e227-4380-89b4-af1025dd56cb" />
 
 When duplication is active:
 - Standard applications are routed to the virtual cable. Audio is captured from the virtual cable and replayed to each selected output device in real time.

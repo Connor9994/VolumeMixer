@@ -1,4 +1,0 @@
-When compiled into an exe, running nightlight_control opens command prompts.
-Hide these if possible.
- 
-Auto-mute system pings
